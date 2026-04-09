@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>My Dashboard</h1>
+  <p>Role: <b>{{ current_user.role }}</b> | Credits: <b>{{ current_user.credits }}</b></p>
+</section>
+
+<section class="card">
+  <h2>Edit Profile</h2>
+  <form method="post" action="/profile" class="grid-form">
+    <label>Email</label>
+    <input type="email" name="email" value="{{ current_user.email }}" required />
+    <label>New Password (optional)</label>
+    <input type="password" name="password" />
+    <button type="submit">Save Profile</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>My Jobs</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Project</th>
+        <th>Title</th>
+        <th>Status</th>
+        <th>Video</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.projectId }}</td>
+        <td>{{ job.title }}</td>
+        <td>{{ job.status }}</td>
+        <td>{% if job.videoExists %}Available{% else %}<span class="muted">Deleted</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+

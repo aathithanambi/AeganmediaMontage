@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>AeganMediaMontage</h1>
+  <p>Latest processed projects are shown first. Video metadata remains even after auto-cleanup.</p>
+</section>
+
+<section class="card">
+  <h2>Processed Videos</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Project</th>
+        <th>Title</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th>Expires</th>
+        <th>Video</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.projectId }}</td>
+        <td>{{ job.title }}</td>
+        <td>{{ job.status }}</td>
+        <td>{{ job.createdAt }}</td>
+        <td>{{ job.expiresAt }}</td>
+        <td>
+          {% if job.videoExists %}
+            <code>{{ job.videoPath }}</code>
+          {% else %}
+            <span class="muted">Deleted (metadata kept)</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+

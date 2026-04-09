@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <img src="/static/img/logoText.svg" alt="Aegan Media" />
+    </a>
+    <nav>
+      <a href="/">Home</a>
+      {% if current_user %}
+        <a href="/dashboard">Dashboard</a>
+        {% if current_user.role in ["admin", "manager"] %}
+          <a href="/admin-dashboard">Admin Dashboard</a>
+        {% endif %}
+        <form method="post" action="/logout" class="inline-form">
+          <button type="submit">Logout</button>
+        </form>
+      {% else %}
+        <a href="/login">Login</a>
+        <a href="/signup">Signup</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
+

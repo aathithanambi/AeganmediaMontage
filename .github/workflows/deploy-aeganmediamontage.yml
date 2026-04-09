@@ -1,0 +1,81 @@
+name: Deploy AeganMediaMontage
+
+on:
+  push:
+    branches:
+      - development
+
+jobs:
+  deploy:
+    name: Build and Deploy Container
+    runs-on: ubuntu-22.04
+    env:
+      IMAGE_NAME: aeganmediamontage-web
+      IMAGE_TAG: ${{ github.run_number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile .
+
+      - name: Export image tar
+        run: docker save -o ${IMAGE_NAME}-${IMAGE_TAG}.tar ${IMAGE_NAME}:${IMAGE_TAG}
+
+      - name: Copy image to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.PORT }}
+          source: "${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar"
+          target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/"
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.PORT }}
+          script: |
+            set -e
+            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage
+            mkdir -p /var/aeganmediamontage/videos
+
+            cat > /var/aeganmediamontage/.env <<'EOF'
+            APP_NAME=AeganMediaMontage
+            HOST=0.0.0.0
+            PORT=41005
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            JWT_EXP_MINUTES=1440
+            MONGODB_URI=${{ secrets.MONGODB_URI }}
+            MONGODB_DB=${{ secrets.MONGODB_DB }}
+            VIDEOS_ROOT=/var/aeganmediamontage/videos
+            VIDEO_RETENTION_HOURS=48
+            INIT_DB_ON_BOOT=${{ secrets.INIT_DB_ON_BOOT }}
+            INIT_SEED_USERS=true
+            SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}
+            SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}
+            SEED_MANAGER_EMAIL=${{ secrets.SEED_MANAGER_EMAIL }}
+            SEED_MANAGER_PASSWORD=${{ secrets.SEED_MANAGER_PASSWORD }}
+            EOF
+
+            chmod 600 /var/aeganmediamontage/.env
+
+            docker load -i /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
+            docker stop aeganmediamontage-web || true
+            docker rm aeganmediamontage-web || true
+
+            docker run -d \
+              --name aeganmediamontage-web \
+              --restart unless-stopped \
+              --env-file /var/aeganmediamontage/.env \
+              -v /var/aeganmediamontage/videos:/var/aeganmediamontage/videos \
+              -p 127.0.0.1:51003:41005 \
+              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+            rm -f /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
+

@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Admin Dashboard</h1>
+  <p>Admin: full rights. Manager: can manage credits and website operations, but cannot delete users.</p>
+</section>
+
+<section class="card">
+  <h2>Password Reset Requests</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Requested At</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for req in reset_requests %}
+      <tr>
+        <td>{{ req.email }}</td>
+        <td>{{ req.requestedAt }}</td>
+        <td>{{ req.status }}</td>
+        <td>
+          {% if current_user.role == "admin" %}
+            <form method="post" action="/admin/password-requests/{{ req._id }}/resolve" class="inline-form">
+              <input type="hidden" name="status_value" value="approved" />
+              <button type="submit">Approve</button>
+            </form>
+            <form method="post" action="/admin/password-requests/{{ req._id }}/resolve" class="inline-form">
+              <input type="hidden" name="status_value" value="rejected" />
+              <button type="submit">Reject</button>
+            </form>
+          {% else %}
+            <span class="muted">Admin only</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Users</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Role</th>
+        <th>Credits</th>
+        <th>Role Update</th>
+        <th>Credits Update</th>
+        <th>Delete User</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td>{{ user.email }}</td>
+        <td>{{ user.role }}</td>
+        <td>{{ user.credits }}</td>
+        <td>
+          {% if current_user.role == "admin" %}
+          <form method="post" action="/admin/users/{{ user._id }}/role" class="inline-form">
+            <select name="role">
+              <option value="user" {% if user.role == "user" %}selected{% endif %}>user</option>
+              <option value="manager" {% if user.role == "manager" %}selected{% endif %}>manager</option>
+              <option value="admin" {% if user.role == "admin" %}selected{% endif %}>admin</option>
+            </select>
+            <button type="submit">Save</button>
+          </form>
+          {% else %}
+            <span class="muted">Admin only</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="/admin/users/{{ user._id }}/credits" class="inline-form">
+            <input type="number" name="credits" value="{{ user.credits }}" min="0" />
+            <button type="submit">Update</button>
+          </form>
+        </td>
+        <td>
+          {% if current_user.role == "admin" %}
+          <form method="post" action="/admin/users/{{ user._id }}/delete" class="inline-form">
+            <button type="submit" class="danger">Delete</button>
+          </form>
+          {% else %}
+            <span class="muted">Admin only</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="card">
+  <h2>Manual Cleanup</h2>
+  <form method="post" action="/admin/run-cleanup" class="inline-form">
+    <button type="submit">Run Expired Video Cleanup</button>
+  </form>
+</section>
+{% endblock %}
+
