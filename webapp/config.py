@@ -31,6 +31,12 @@ class Settings:
     seed_manager_email: str = os.getenv("SEED_MANAGER_EMAIL", "manager@aegan.local")
     seed_manager_password: str = os.getenv("SEED_MANAGER_PASSWORD", "Manager@123")
 
+    worker_poll_seconds: int = int(os.getenv("WORKER_POLL_SECONDS", "5"))
+    worker_timeout_seconds: int = int(os.getenv("WORKER_TIMEOUT_SECONDS", "10800"))
+    # command mode executes subprocess without shell; placeholders are resolved by worker.
+    # supported placeholders: {pipeline}, {project_id}, {prompt_file}
+    pipeline_run_command: str = os.getenv("PIPELINE_RUN_COMMAND", "")
+
 
 settings = Settings()
 

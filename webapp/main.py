@@ -78,6 +78,21 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_run(run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(run["_id"]),
+        "pipelineName": run.get("pipelineName"),
+        "projectId": run.get("projectId"),
+        "title": run.get("title"),
+        "status": run.get("status"),
+        "error": run.get("error"),
+        "outputVideoPath": run.get("outputVideoPath"),
+        "createdAt": run.get("createdAt"),
+        "startedAt": run.get("startedAt"),
+        "completedAt": run.get("completedAt"),
+    }
+
+
 @app.on_event("startup")
 async def _on_startup() -> None:
     global _cleanup_task
@@ -316,4 +331,48 @@ def create_job(
     }
     result = db.video_jobs.insert_one(job_doc)
     return JSONResponse({"id": str(result.inserted_id)})
+
+
+@app.post("/api/pipeline-runs")
+def enqueue_pipeline_run(
+    request: Request,
+    pipeline_name: str = Form(...),
+    project_id: str = Form(...),
+    title: str = Form(...),
+    prompt: str = Form(...),
+):
+    actor = _require_user(request)
+    _require_role(actor, {"admin", "manager"})
+
+    pipeline_file = Path("pipeline_defs") / f"{pipeline_name}.yaml"
+    if not pipeline_file.exists():
+        raise HTTPException(status_code=400, detail=f"Unknown pipeline: {pipeline_name}")
+
+    db = get_db()
+    now = datetime.now(UTC)
+    run_doc = {
+        "pipelineName": pipeline_name,
+        "projectId": project_id,
+        "title": title,
+        "prompt": prompt,
+        "status": "queued",
+        "requestedBy": str(actor["_id"]),
+        "createdAt": now,
+        "updatedAt": now,
+        "startedAt": None,
+        "completedAt": None,
+        "outputVideoPath": None,
+        "error": None,
+    }
+    result = db.pipeline_runs.insert_one(run_doc)
+    return JSONResponse({"id": str(result.inserted_id), "status": "queued"})
+
+
+@app.get("/api/pipeline-runs")
+def list_pipeline_runs(request: Request):
+    actor = _require_user(request)
+    _require_role(actor, {"admin", "manager"})
+    db = get_db()
+    runs = [_public_run(r) for r in db.pipeline_runs.find().sort("createdAt", -1).limit(100)]
+    return JSONResponse({"items": runs})
 

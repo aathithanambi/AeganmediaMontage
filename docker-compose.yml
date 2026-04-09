@@ -13,18 +13,34 @@ services:
       INIT_DB_ON_BOOT: ${INIT_DB_ON_BOOT:-false}
       VIDEOS_ROOT: /var/aeganmediamontage/videos
       MONGODB_DB: ${MONGODB_DB:-aeganmediamontage}
-      MONGODB_URI: ${MONGODB_URI:-mongodb://aegan_app_user:change-me@mongo:27017/aeganmediamontage?authSource=aeganmediamontage}
+      MONGODB_URI: ${MONGODB_URI}
+      PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-}
     ports:
       - "127.0.0.1:51003:41005"
     volumes:
       - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
-    depends_on:
-      - mongo
+
+  pipeline-worker:
+    image: aeganmediamontage-web:latest
+    container_name: aeganmediamontage-worker
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      MONGODB_DB: ${MONGODB_DB:-aeganmediamontage}
+      MONGODB_URI: ${MONGODB_URI}
+      PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-}
+      VIDEOS_ROOT: /var/aeganmediamontage/videos
+    volumes:
+      - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
+    entrypoint: ["python", "-m", "webapp.worker"]
 
   mongo:
     image: mongo:7
     container_name: aeganmediamontage-mongo
     restart: unless-stopped
+    profiles:
+      - local-mongo
     ports:
       - "127.0.0.1:27017:27017"
     environment:

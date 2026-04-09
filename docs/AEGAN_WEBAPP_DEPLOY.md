@@ -17,6 +17,7 @@
   - `users`
   - `video_jobs`
   - `password_reset_requests`
+  - `pipeline_runs`
 - Video metadata stays in DB even after file is deleted.
 - Latest processed jobs are listed first.
 - Auto cleanup deletes expired video files from disk after 48 hours.
@@ -26,6 +27,32 @@
 Yes. Admin dashboard + backend API are in one container (`aeganmediamontage-web`).
 
 MongoDB should remain a separate service (recommended) or Atlas cluster.
+
+## Pipeline worker
+
+`pipeline-worker` is added as a dedicated process/container (`aeganmediamontage-worker`).
+
+- It polls `pipeline_runs` queue in MongoDB Atlas.
+- It executes `PIPELINE_RUN_COMMAND`.
+- On success, it writes output video metadata into `video_jobs`.
+- It runs on your server, not on GitHub-hosted runners.
+
+### Queue endpoints
+
+- `POST /api/pipeline-runs` (admin/manager) enqueue a run
+  - fields: `pipeline_name`, `project_id`, `title`, `prompt`
+- `GET /api/pipeline-runs` list recent runs (latest first)
+
+
+### Important
+
+You must configure `PIPELINE_RUN_COMMAND` in `.env`/GitHub secrets.
+This command should call your pipeline execution entrypoint on the server.
+Supported placeholders in command:
+
+- `{pipeline}`
+- `{project_id}`
+- `{prompt_file}` (JSON payload saved by worker)
 
 ## First-time DB initialization
 

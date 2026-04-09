@@ -15,6 +15,8 @@ def _ensure_indexes() -> None:
     db.video_jobs.create_index([("createdAt", DESCENDING)])
     db.video_jobs.create_index([("expiresAt", ASCENDING)])
     db.password_reset_requests.create_index([("requestedAt", DESCENDING)])
+    db.pipeline_runs.create_index([("createdAt", DESCENDING)])
+    db.pipeline_runs.create_index([("status", ASCENDING), ("createdAt", ASCENDING)])
 
 
 def _seed_user(email: str, password: str, role: str) -> None:
