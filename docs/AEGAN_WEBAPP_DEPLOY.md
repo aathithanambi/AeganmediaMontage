@@ -56,20 +56,16 @@ Supported placeholders in command:
 
 ## First-time DB initialization
 
-Two controls are available:
+Use `INIT_DB_ON_BOOT=true|false`:
 
-1. `docker/mongo/init.db.js`
-   - Runs once when Mongo data volume is empty (standard Mongo behavior).
-2. `INIT_DB_ON_BOOT=true|false`
-   - Controls app-side bootstrap/index creation and user seeding.
-   - Set `true` only for first deployment, then set `false`.
+- `true` on first deployment to create indexes and seed admin/manager users.
+- `false` after first successful startup.
 
 ## Local Docker Compose
 
 ```bash
 cp .env.example .env
-# Set MONGODB_URI for local mongo:
-# mongodb://aegan_app_user:change-me@mongo:27017/aeganmediamontage?authSource=aeganmediamontage
+# Set MONGODB_URI to your Atlas connection string.
 
 docker compose up -d --build
 ```

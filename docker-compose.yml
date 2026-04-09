@@ -10,7 +10,7 @@ services:
       - ${APP_ENV_FILE:-.env}
     environment:
       # Control app bootstrap explicitly from compose or env file.
-      INIT_DB_ON_BOOT: ${INIT_DB_ON_BOOT:-false}
+      INIT_DB_ON_BOOT: ${INIT_DB_ON_BOOT:-true}
       VIDEOS_ROOT: /var/aeganmediamontage/videos
       MONGODB_DB: ${MONGODB_DB:-aeganmediamontage}
       MONGODB_URI: ${MONGODB_URI}
@@ -34,25 +34,4 @@ services:
     volumes:
       - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
     entrypoint: ["python", "-m", "webapp.worker"]
-
-  mongo:
-    image: mongo:7
-    container_name: aeganmediamontage-mongo
-    restart: unless-stopped
-    profiles:
-      - local-mongo
-    ports:
-      - "127.0.0.1:27017:27017"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-rootpass}
-      MONGO_APP_DB: ${MONGODB_DB:-aeganmediamontage}
-      MONGO_APP_USER: ${MONGO_APP_USER:-aegan_app_user}
-      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-change-me}
-    volumes:
-      - mongo_data:/data/db
-      - ./docker/mongo/init.db.js:/docker-entrypoint-initdb.d/init.db.js:ro
-
-volumes:
-  mongo_data:
 
