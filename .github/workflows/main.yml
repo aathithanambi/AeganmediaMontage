@@ -12,13 +12,46 @@ jobs:
   deploy:
     name: Build and Deploy Container
     runs-on: ubuntu-22.04
+    environment: development
     env:
       IMAGE_NAME: aeganmediamontage-web
       IMAGE_TAG: ${{ github.run_number }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate required GitHub secrets
+        env:
+          HOST: ${{ secrets.HOST }}
+          USERNAME: ${{ secrets.USERNAME }}
+          PASSWORD: ${{ secrets.PASSWORD }}
+          PORT: ${{ secrets.PORT }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          MONGODB_DB: ${{ secrets.MONGODB_DB }}
+          INIT_DB_ON_BOOT: ${{ secrets.INIT_DB_ON_BOOT }}
+          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
+          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
+          SEED_MANAGER_EMAIL: ${{ secrets.SEED_MANAGER_EMAIL }}
+          SEED_MANAGER_PASSWORD: ${{ secrets.SEED_MANAGER_PASSWORD }}
+          PIPELINE_RUN_COMMAND: ${{ secrets.PIPELINE_RUN_COMMAND }}
+        run: |
+          missing=0
+          for key in HOST USERNAME PASSWORD PORT JWT_SECRET MONGODB_URI MONGODB_DB INIT_DB_ON_BOOT SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD SEED_MANAGER_EMAIL SEED_MANAGER_PASSWORD PIPELINE_RUN_COMMAND; do
+            val="$(printenv "$key" || true)"
+            if [ -z "$val" ]; then
+              echo "Missing GitHub secret: $key"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Secrets are not available to this workflow."
+            echo "If you stored them under Environment secrets, assign that environment to this job."
+            echo "Also note: secrets are not exposed to workflows from forks."
+            exit 1
+          fi
 
       - name: Build image
         run: docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile .
