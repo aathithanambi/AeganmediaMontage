@@ -14,7 +14,7 @@ def _to_bool(value: str | None, default: bool = False) -> bool:
 class Settings:
     app_name: str = os.getenv("APP_NAME", "AeganMediaMontage")
     host: str = os.getenv("HOST", "0.0.0.0")
-    port: int = int(os.getenv("PORT", "41005"))
+    port: int = int(os.getenv("PORT", "41006"))
     jwt_secret: str = os.getenv("JWT_SECRET", "change-this-in-production")
     jwt_exp_minutes: int = int(os.getenv("JWT_EXP_MINUTES", "1440"))
 

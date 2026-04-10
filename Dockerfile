@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY . /app
 RUN chmod +x /app/docker/app-entrypoint.sh
 
-EXPOSE 41005
+EXPOSE 41006
 
 ENTRYPOINT ["/app/docker/app-entrypoint.sh"]
 

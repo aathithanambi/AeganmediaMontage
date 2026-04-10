@@ -6,5 +6,5 @@ if [ "${INIT_DB_ON_BOOT:-false}" = "true" ]; then
   python -m webapp.bootstrap
 fi
 
-exec uvicorn webapp.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-41005}"
+exec uvicorn webapp.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-41006}"
 

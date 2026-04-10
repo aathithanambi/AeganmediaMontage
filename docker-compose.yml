@@ -16,7 +16,7 @@ services:
       MONGODB_URI: ${MONGODB_URI}
       PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-}
     ports:
-      - "127.0.0.1:51003:41005"
+      - "127.0.0.1:51004:41006"
     volumes:
       - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
 

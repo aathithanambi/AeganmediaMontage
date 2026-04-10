@@ -70,7 +70,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-App is available at: `http://127.0.0.1:51003`
+App is available at: `http://127.0.0.1:51004`
 
 ## Register a processed job from pipeline
 

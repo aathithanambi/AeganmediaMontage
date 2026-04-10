@@ -2,9 +2,11 @@
 name: Deploy AeganMediaMontage
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - development
+      - feature/development
 
 jobs:
   deploy:
@@ -49,7 +51,7 @@ jobs:
             cat > /var/aeganmediamontage/.env <<'EOF'
             APP_NAME=AeganMediaMontage
             HOST=0.0.0.0
-            PORT=41005
+            PORT=41006
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             JWT_EXP_MINUTES=1440
             MONGODB_URI=${{ secrets.MONGODB_URI }}
@@ -68,6 +70,10 @@ jobs:
             EOF
 
             chmod 600 /var/aeganmediamontage/.env
+            if grep -nE "^JWT_SECRET=$|^MONGODB_URI=$|^SEED_ADMIN_PASSWORD=$|^SEED_MANAGER_PASSWORD=$" /var/aeganmediamontage/.env; then
+              echo "Required secrets are missing in generated .env"
+              exit 1
+            fi
 
             docker load -i /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
             docker stop aeganmediamontage-web || true
