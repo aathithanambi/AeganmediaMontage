@@ -57,7 +57,14 @@ jobs:
         run: docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile .
 
       - name: Export image tar
-        run: docker save -o ${IMAGE_NAME}-${IMAGE_TAG}.tar ${IMAGE_NAME}:${IMAGE_TAG}
+        run: |
+          docker save -o ${IMAGE_NAME}-${IMAGE_TAG}.tar ${IMAGE_NAME}:${IMAGE_TAG}
+          chmod 644 ${IMAGE_NAME}-${IMAGE_TAG}.tar
+
+      - name: Verify tar is readable
+        run: |
+          ls -l ${IMAGE_NAME}-${IMAGE_TAG}.tar
+          test -r ${IMAGE_NAME}-${IMAGE_TAG}.tar
 
       - name: Prepare remote upload directory
         uses: appleboy/ssh-action@v0.1.10
@@ -83,6 +90,7 @@ jobs:
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/"
           overwrite: true
           tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
+          debug: true
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v0.1.10
