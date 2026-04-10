@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jwt import InvalidTokenError
+from pymongo.errors import PyMongoError
 
 from webapp.bootstrap import run_bootstrap
 from webapp.cleanup import cleanup_expired_videos
@@ -117,16 +118,26 @@ async def _cleanup_loop() -> None:
         cleanup_expired_videos()
 
 
+@app.get("/health")
+def health():
+    db = get_db()
+    try:
+        db.command("ping")
+    except PyMongoError as exc:
+        return JSONResponse({"status": "degraded", "db": "down", "error": str(exc)}, status_code=503)
+    return JSONResponse({"status": "ok", "db": "up"})
+
+
 @app.get("/")
 def home(request: Request):
     db = get_db()
     jobs = [_public_job(job) for job in db.video_jobs.find().sort("createdAt", -1).limit(100)]
-    return templates.TemplateResponse("home.html", _template_context(request, jobs=jobs))
+    return templates.TemplateResponse(request, "home.html", _template_context(request, jobs=jobs))
 
 
 @app.get("/signup")
 def signup_page(request: Request):
-    return templates.TemplateResponse("signup.html", _template_context(request, error=None))
+    return templates.TemplateResponse(request, "signup.html", _template_context(request, error=None))
 
 
 @app.post("/signup")
@@ -139,7 +150,7 @@ def signup(
     existing = db.users.find_one({"email": email.strip().lower()})
     if existing:
         return templates.TemplateResponse(
-            "signup.html", _template_context(request, error="Email already exists"), status_code=400
+            request, "signup.html", _template_context(request, error="Email already exists"), status_code=400
         )
     user_doc = {
         "email": email.strip().lower(),
@@ -159,7 +170,7 @@ def signup(
 
 @app.get("/login")
 def login_page(request: Request):
-    return templates.TemplateResponse("login.html", _template_context(request, error=None))
+    return templates.TemplateResponse(request, "login.html", _template_context(request, error=None))
 
 
 @app.post("/login")
@@ -172,7 +183,7 @@ def login(
     user = db.users.find_one({"email": email.strip().lower()})
     if not user or not verify_password(password, user["passwordHash"]):
         return templates.TemplateResponse(
-            "login.html", _template_context(request, error="Invalid credentials"), status_code=400
+            request, "login.html", _template_context(request, error="Invalid credentials"), status_code=400
         )
     token = create_access_token(str(user["_id"]), user["role"])
     response = RedirectResponse("/dashboard", status_code=303)
@@ -189,7 +200,7 @@ def logout():
 
 @app.get("/forgot-password")
 def forgot_password_page(request: Request):
-    return templates.TemplateResponse("forgot_password.html", _template_context(request, message=None))
+    return templates.TemplateResponse(request, "forgot_password.html", _template_context(request, message=None))
 
 
 @app.post("/forgot-password")
@@ -206,6 +217,7 @@ def forgot_password(request: Request, email: str = Form(...)):
             }
         )
     return templates.TemplateResponse(
+        request,
         "forgot_password.html",
         _template_context(
             request,
@@ -222,7 +234,7 @@ def dashboard(request: Request):
         _public_job(job)
         for job in db.video_jobs.find({"requestedBy": str(user["_id"])}).sort("createdAt", -1).limit(50)
     ]
-    return templates.TemplateResponse("dashboard.html", _template_context(request, jobs=jobs))
+    return templates.TemplateResponse(request, "dashboard.html", _template_context(request, jobs=jobs))
 
 
 @app.post("/profile")
@@ -244,6 +256,7 @@ def admin_dashboard(request: Request):
     users = list(db.users.find().sort("createdAt", -1))
     reset_requests = list(db.password_reset_requests.find({"status": "pending"}).sort("requestedAt", -1))
     return templates.TemplateResponse(
+        request,
         "admin_dashboard.html",
         _template_context(request, users=users, reset_requests=reset_requests),
     )

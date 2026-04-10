@@ -30,6 +30,8 @@ class Settings:
     seed_admin_password: str = os.getenv("SEED_ADMIN_PASSWORD", "Admin@123")
     seed_manager_email: str = os.getenv("SEED_MANAGER_EMAIL", "manager@aegan.local")
     seed_manager_password: str = os.getenv("SEED_MANAGER_PASSWORD", "Manager@123")
+    seed_user_email: str = os.getenv("SEED_USER_EMAIL", "user@aegan.local")
+    seed_user_password: str = os.getenv("SEED_USER_PASSWORD", "User@2026")
 
     worker_poll_seconds: int = int(os.getenv("WORKER_POLL_SECONDS", "5"))
     worker_timeout_seconds: int = int(os.getenv("WORKER_TIMEOUT_SECONDS", "10800"))

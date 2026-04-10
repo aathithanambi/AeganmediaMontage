@@ -19,12 +19,13 @@ def _ensure_indexes() -> None:
     db.pipeline_runs.create_index([("status", ASCENDING), ("createdAt", ASCENDING)])
 
 
-def _seed_user(email: str, password: str, role: str) -> None:
+def _seed_user(email: str, password: str, role: str, name: str = "") -> None:
     db = get_db()
     if db.users.find_one({"email": email}):
         return
     db.users.insert_one(
         {
+            "name": name or role.capitalize(),
             "email": email,
             "passwordHash": hash_password(password),
             "role": role,
@@ -39,8 +40,9 @@ def _seed_user(email: str, password: str, role: str) -> None:
 def run_bootstrap() -> None:
     _ensure_indexes()
     if settings.init_seed_users:
-        _seed_user(settings.seed_admin_email, settings.seed_admin_password, "admin")
-        _seed_user(settings.seed_manager_email, settings.seed_manager_password, "manager")
+        _seed_user(settings.seed_admin_email, settings.seed_admin_password, "admin", "Admin")
+        _seed_user(settings.seed_manager_email, settings.seed_manager_password, "manager", "Manager")
+        _seed_user(settings.seed_user_email, settings.seed_user_password, "user", "User")
 
 
 if __name__ == "__main__":

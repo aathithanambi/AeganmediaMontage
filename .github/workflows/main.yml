@@ -36,10 +36,12 @@ jobs:
           SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
           SEED_MANAGER_EMAIL: ${{ secrets.SEED_MANAGER_EMAIL }}
           SEED_MANAGER_PASSWORD: ${{ secrets.SEED_MANAGER_PASSWORD }}
+          SEED_USER_EMAIL: ${{ secrets.SEED_USER_EMAIL }}
+          SEED_USER_PASSWORD: ${{ secrets.SEED_USER_PASSWORD }}
           PIPELINE_RUN_COMMAND: ${{ secrets.PIPELINE_RUN_COMMAND }}
         run: |
           missing=0
-          for key in HOST USERNAME PASSWORD PORT JWT_SECRET MONGODB_URI MONGODB_DB INIT_DB_ON_BOOT SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD SEED_MANAGER_EMAIL SEED_MANAGER_PASSWORD PIPELINE_RUN_COMMAND; do
+          for key in HOST USERNAME PASSWORD PORT JWT_SECRET MONGODB_URI MONGODB_DB INIT_DB_ON_BOOT SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD SEED_MANAGER_EMAIL SEED_MANAGER_PASSWORD SEED_USER_EMAIL SEED_USER_PASSWORD PIPELINE_RUN_COMMAND; do
             val="$(printenv "$key" || true)"
             if [ -z "$val" ]; then
               echo "Missing GitHub secret: $key"
@@ -79,18 +81,30 @@ jobs:
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
             chmod 700 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
 
-      - name: Copy image to server
+      - name: Copy image and scripts to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.PORT }}
-          source: "${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar"
+          source: "${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar,docker/pre-deploy.sh"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/"
           overwrite: true
           tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
           debug: true
+
+      - name: Stop and remove old containers and images
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.PORT }}
+          script: |
+            set -e
+            chmod +x /home/${{ secrets.USERNAME }}/aeganmediamontage/docker/pre-deploy.sh
+            /home/${{ secrets.USERNAME }}/aeganmediamontage/docker/pre-deploy.sh
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v0.1.10
@@ -122,6 +136,8 @@ jobs:
             SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}
             SEED_MANAGER_EMAIL=${{ secrets.SEED_MANAGER_EMAIL }}
             SEED_MANAGER_PASSWORD=${{ secrets.SEED_MANAGER_PASSWORD }}
+            SEED_USER_EMAIL=${{ secrets.SEED_USER_EMAIL }}
+            SEED_USER_PASSWORD=${{ secrets.SEED_USER_PASSWORD }}
             PIPELINE_RUN_COMMAND=${{ secrets.PIPELINE_RUN_COMMAND }}
             WORKER_POLL_SECONDS=5
             WORKER_TIMEOUT_SECONDS=10800
@@ -134,10 +150,6 @@ jobs:
             fi
 
             docker load -i /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
-            docker stop aeganmediamontage-web || true
-            docker rm aeganmediamontage-web || true
-            docker stop aeganmediamontage-worker || true
-            docker rm aeganmediamontage-worker || true
 
             docker run -d \
               --name aeganmediamontage-web \
@@ -183,6 +195,20 @@ jobs:
 
             docker logs --tail 200 aeganmediamontage-web > /var/aeganmediamontage/logs/web-startup.log || true
             docker logs --tail 200 aeganmediamontage-worker > /var/aeganmediamontage/logs/worker-startup.log || true
+
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:51004/health >/dev/null; then
+                echo "Health check passed."
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "Health check failed after retries."
+                docker logs --tail 300 aeganmediamontage-web || true
+                docker logs --tail 300 aeganmediamontage-worker || true
+                exit 1
+              fi
+              sleep 2
+            done
 
             rm -f /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
 
