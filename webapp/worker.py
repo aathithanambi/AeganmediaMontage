@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from bson import ObjectId
 from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
@@ -32,16 +34,44 @@ def _claim_next_run() -> dict | None:
 
 def _mark_failed(run_id, message: str) -> None:
     db = get_db()
-    db.pipeline_runs.update_one(
+    run = db.pipeline_runs.find_one_and_update(
         {"_id": run_id},
         {"$set": {"status": "failed", "error": message, "updatedAt": datetime.now(UTC)}},
     )
+    if run and run.get("creditsCharged", 0) > 0 and run.get("requestedBy"):
+        db.users.update_one(
+            {"_id": ObjectId(run["requestedBy"])},
+            {"$inc": {"credits": run["creditsCharged"]}, "$set": {"updatedAt": datetime.now(UTC)}},
+        )
+        print(f"Refunded {run['creditsCharged']} credit(s) to user {run['requestedBy']}")
+
+
+def _copy_to_videos_root(source_path: str, project_id: str) -> str | None:
+    """Copy video to videos_root for reliable serving and cleanup."""
+    src = Path(source_path)
+    if not src.exists():
+        return None
+    dest_dir = Path(settings.videos_root)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    dest = dest_dir / f"{project_id}_{ts}{src.suffix}"
+    try:
+        shutil.copy2(str(src), str(dest))
+        return str(dest)
+    except OSError as exc:
+        print(f"Failed to copy video to videos_root: {exc}")
+        return source_path
 
 
 def _mark_completed(run: dict, stdout: str, stderr: str) -> None:
     db = get_db()
     now = datetime.now(UTC)
-    video_path = _resolve_output_path(run, stdout)
+    raw_video_path = _resolve_output_path(run, stdout)
+    video_path = raw_video_path
+    if raw_video_path:
+        copied = _copy_to_videos_root(raw_video_path, run["projectId"])
+        if copied:
+            video_path = copied
     db.pipeline_runs.update_one(
         {"_id": run["_id"]},
         {
@@ -100,6 +130,7 @@ def _execute_run(run: dict) -> None:
                 "projectId": run["projectId"],
                 "title": run.get("title"),
                 "prompt": run.get("prompt"),
+                "referenceUrl": run.get("referenceUrl"),
                 "requestedBy": run.get("requestedBy"),
             },
             ensure_ascii=True,

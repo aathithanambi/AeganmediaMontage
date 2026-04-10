@@ -1,43 +1,184 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <h1>My Dashboard</h1>
-  <p>Role: <b>{{ current_user.role }}</b> | Credits: <b>{{ current_user.credits }}</b></p>
+
+<!-- User info bar -->
+<section class="card dash-header">
+  <div class="dash-info">
+    <h1>Dashboard</h1>
+    <p>
+      Role: <b>{{ current_user.role | capitalize }}</b>
+      {% if current_user.role in ["admin", "manager"] %}
+        &nbsp;&middot;&nbsp; Credits: <span class="badge badge-ok">Unlimited</span>
+      {% else %}
+        &nbsp;&middot;&nbsp; Credits: <b>{{ current_user.credits }}</b>
+        <span class="muted">({{ credit_cost }} per project)</span>
+      {% endif %}
+    </p>
+  </div>
 </section>
 
+<!-- Create Project -->
 <section class="card">
-  <h2>Edit Profile</h2>
-  <form method="post" action="/profile" class="grid-form">
-    <label>Email</label>
-    <input type="email" name="email" value="{{ current_user.email }}" required />
-    <label>New Password (optional)</label>
-    <input type="password" name="password" />
-    <button type="submit">Save Profile</button>
+  <h2>Create Project</h2>
+  {% if current_user.role not in ["admin", "manager"] and current_user.credits < credit_cost %}
+    <div class="alert alert-warn">
+      You need at least <b>{{ credit_cost }}</b> credit(s) to create a project. Contact an admin or manager to get credits.
+    </div>
+  {% endif %}
+  <form method="post" action="/dashboard/create-project" class="create-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="pipeline_name">Pipeline</label>
+        <select name="pipeline_name" id="pipeline_name" required>
+          <option value="">Select a pipeline...</option>
+          {% for p in pipelines %}
+            <option value="{{ p.name }}">{{ p.name | replace("-", " ") | title }}{% if p.stability == "beta" %} (Beta){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="title">Project Title</label>
+        <input type="text" name="title" id="title" placeholder="My video project" required />
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="prompt">Prompt / Description</label>
+      <textarea name="prompt" id="prompt" rows="4" placeholder="Describe the video you want to create. You can also paste a YouTube URL as reference..." required></textarea>
+    </div>
+    <div class="form-group">
+      <label for="reference_url">Reference Video URL <span class="muted">(optional &mdash; YouTube, TikTok, Reel, or any video URL)</span></label>
+      <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." />
+    </div>
+    <button type="submit" class="btn btn-primary"
+      {% if current_user.role not in ["admin", "manager"] and current_user.credits < credit_cost %}disabled{% endif %}>
+      Create Project
+      {% if current_user.role not in ["admin", "manager"] %}({{ credit_cost }} credit){% endif %}
+    </button>
   </form>
 </section>
 
+<!-- Pipeline Runs -->
 <section class="card">
-  <h2>My Jobs</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Project</th>
-        <th>Title</th>
-        <th>Status</th>
-        <th>Video</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for job in jobs %}
-      <tr>
-        <td>{{ job.projectId }}</td>
-        <td>{{ job.title }}</td>
-        <td>{{ job.status }}</td>
-        <td>{% if job.videoExists %}Available{% else %}<span class="muted">Deleted</span>{% endif %}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <h2>My Pipeline Runs</h2>
+  {% if runs %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Pipeline</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+        <tr>
+          <td>{{ run.pipelineName | replace("-", " ") | title }}</td>
+          <td><a href="/dashboard/run/{{ run.id }}">{{ run.title }}</a></td>
+          <td>
+            {% if run.status == "completed" %}
+              <span class="badge badge-ok">Completed</span>
+            {% elif run.status == "running" %}
+              <span class="badge badge-info">Running</span>
+            {% elif run.status == "queued" %}
+              <span class="badge">Queued</span>
+            {% elif run.status == "failed" %}
+              <span class="badge badge-danger">Failed</span>
+            {% else %}
+              <span class="badge">{{ run.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ run.createdAt.strftime('%Y-%m-%d %H:%M') if run.createdAt else '-' }}</td>
+          <td>
+            {% if run.outputVideoPath %}
+              <a href="/download/run/{{ run.id }}" class="btn btn-primary btn-sm">Download</a>
+            {% elif run.status == "failed" %}
+              <a href="/dashboard/run/{{ run.id }}" class="muted">View Error</a>
+            {% else %}
+              <span class="muted">Pending</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No pipeline runs yet. Create your first project above.</p>
+  {% endif %}
 </section>
-{% endblock %}
 
+<!-- Processed Videos -->
+<section class="card">
+  <h2>My Videos</h2>
+  {% if jobs %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Expires</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>{{ job.projectId }}</td>
+          <td>{{ job.title }}</td>
+          <td>
+            {% if job.videoExists %}
+              <span class="badge badge-ok">Available</span>
+            {% elif job.status == "deleted" %}
+              <span class="badge">Expired</span>
+            {% else %}
+              <span class="badge">{{ job.status }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if job.expiresAt %}
+              {{ job.expiresAt.strftime('%Y-%m-%d %H:%M') if job.expiresAt else '-' }}
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td>
+            {% if job.videoExists %}
+              <a href="/download/{{ job.id }}" class="btn btn-primary btn-sm">Download</a>
+            {% else %}
+              <span class="muted">Deleted (metadata kept)</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No processed videos yet.</p>
+  {% endif %}
+</section>
+
+<!-- Edit Profile -->
+<section class="card">
+  <h2>Edit Profile</h2>
+  <form method="post" action="/profile" class="create-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" name="email" id="email" value="{{ current_user.email }}" required />
+      </div>
+      <div class="form-group">
+        <label for="password">New Password <span class="muted">(optional)</span></label>
+        <input type="password" name="password" id="password" />
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">Save Profile</button>
+  </form>
+</section>
+
+{% endblock %}

@@ -12,24 +12,26 @@
       <img src="/static/img/logoText.svg" alt="Aegan Media" />
     </a>
     <nav>
-      <a href="/">Home</a>
+      <a href="/" class="{% if request.url.path == '/' %}nav-active{% endif %}">Home</a>
       {% if current_user %}
-        <a href="/dashboard">Dashboard</a>
+        <a href="/dashboard" class="{% if request.url.path == '/dashboard' %}nav-active{% endif %}">Dashboard</a>
         {% if current_user.role in ["admin", "manager"] %}
-          <a href="/admin-dashboard">Admin Dashboard</a>
+          <a href="/admin-dashboard" class="{% if request.url.path == '/admin-dashboard' %}nav-active{% endif %}">Admin</a>
         {% endif %}
         <form method="post" action="/logout" class="inline-form">
           <button type="submit">Logout</button>
         </form>
       {% else %}
-        <a href="/login">Login</a>
-        <a href="/signup">Signup</a>
+        <a href="/login" class="{% if request.url.path == '/login' %}nav-active{% endif %}">Login</a>
+        <a href="/signup" class="{% if request.url.path == '/signup' %}nav-active{% endif %}">Signup</a>
       {% endif %}
     </nav>
   </header>
   <main class="container">
     {% block content %}{% endblock %}
   </main>
+  <footer class="site-footer">
+    <p>&copy; 2026 AeganMedia &middot; Powered by OpenMontage</p>
+  </footer>
 </body>
 </html>
-

@@ -5,8 +5,65 @@
   <p>Admin: full rights. Manager: can manage credits and website operations, but cannot delete users.</p>
 </section>
 
+<!-- All Pipeline Runs -->
+<section class="card">
+  <h2>All Pipeline Runs</h2>
+  {% if all_runs %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Pipeline</th>
+          <th>Title</th>
+          <th>Requested By</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th>Output</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in all_runs %}
+        <tr>
+          <td>{{ run.pipelineName | replace("-", " ") | title }}</td>
+          <td>{{ run.title }}</td>
+          <td>{{ run.projectId }}</td>
+          <td>
+            {% if run.status == "completed" %}
+              <span class="badge badge-ok">Completed</span>
+            {% elif run.status == "running" %}
+              <span class="badge badge-info">Running</span>
+            {% elif run.status == "queued" %}
+              <span class="badge">Queued</span>
+            {% elif run.status == "failed" %}
+              <span class="badge badge-danger">Failed</span>
+            {% else %}
+              <span class="badge">{{ run.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ run.createdAt.strftime('%Y-%m-%d %H:%M') if run.createdAt else '-' }}</td>
+          <td>
+            {% if run.outputVideoPath %}
+              <a href="/download/run/{{ run.id }}" class="btn btn-primary btn-sm">Download</a>
+            {% elif run.error %}
+              <span class="muted" title="{{ run.error }}">Error</span>
+            {% else %}
+              <span class="muted">Pending</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No pipeline runs yet.</p>
+  {% endif %}
+</section>
+
+<!-- Password Reset Requests -->
 <section class="card">
   <h2>Password Reset Requests</h2>
+  {% if reset_requests %}
   <table>
     <thead>
       <tr>
@@ -30,7 +87,7 @@
             </form>
             <form method="post" action="/admin/password-requests/{{ req._id }}/resolve" class="inline-form">
               <input type="hidden" name="status_value" value="rejected" />
-              <button type="submit">Reject</button>
+              <button type="submit" class="btn-secondary">Reject</button>
             </form>
           {% else %}
             <span class="muted">Admin only</span>
@@ -40,74 +97,75 @@
       {% endfor %}
     </tbody>
   </table>
+  {% else %}
+    <p class="muted">No pending password reset requests.</p>
+  {% endif %}
 </section>
 
+<!-- Users -->
 <section class="card">
   <h2>Users</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Role</th>
-        <th>Credits</th>
-        <th>Role Update</th>
-        <th>Credits Update</th>
-        <th>Delete User</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for user in users %}
-      <tr>
-        <td>{{ user.email }}</td>
-        <td>{{ user.role }}</td>
-        <td>{{ user.credits }}</td>
-        <td>
-          {% if current_user.role == "admin" %}
-          <form method="post" action="/admin/users/{{ user._id }}/role" class="inline-form">
-            <select name="role">
-              <option value="user" {% if user.role == "user" %}selected{% endif %}>user</option>
-              <option value="manager" {% if user.role == "manager" %}selected{% endif %}>manager</option>
-              <option value="admin" {% if user.role == "admin" %}selected{% endif %}>admin</option>
-            </select>
-            <button type="submit">Save</button>
-          </form>
-          {% else %}
-            <span class="muted">Admin only</span>
-          {% endif %}
-        </td>
-        <td>
-          <form method="post" action="/admin/users/{{ user._id }}/credits" class="inline-form">
-            <input type="number" name="credits" value="{{ user.credits }}" min="0" />
-            <button type="submit">Update</button>
-          </form>
-        </td>
-        <td>
-          {% if current_user.role == "admin" %}
-          <form method="post" action="/admin/users/{{ user._id }}/delete" class="inline-form">
-            <button type="submit" class="danger">Delete</button>
-          </form>
-          {% else %}
-            <span class="muted">Admin only</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Credits</th>
+          <th>Role Update</th>
+          <th>Credits Update</th>
+          <th>Delete</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td>{{ user.get("name", "-") }}</td>
+          <td>{{ user.email }}</td>
+          <td>{{ user.role }}</td>
+          <td>{{ user.credits }}</td>
+          <td>
+            {% if current_user.role == "admin" %}
+            <form method="post" action="/admin/users/{{ user._id }}/role" class="inline-form">
+              <select name="role">
+                <option value="user" {% if user.role == "user" %}selected{% endif %}>user</option>
+                <option value="manager" {% if user.role == "manager" %}selected{% endif %}>manager</option>
+                <option value="admin" {% if user.role == "admin" %}selected{% endif %}>admin</option>
+              </select>
+              <button type="submit">Save</button>
+            </form>
+            {% else %}
+              <span class="muted">Admin only</span>
+            {% endif %}
+          </td>
+          <td>
+            <form method="post" action="/admin/users/{{ user._id }}/credits" class="inline-form">
+              <input type="number" name="credits" value="{{ user.credits }}" min="0" style="width:80px" />
+              <button type="submit">Update</button>
+            </form>
+          </td>
+          <td>
+            {% if current_user.role == "admin" %}
+            <form method="post" action="/admin/users/{{ user._id }}/delete" class="inline-form">
+              <button type="submit" class="danger">Delete</button>
+            </form>
+            {% else %}
+              <span class="muted">Admin only</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
 
+<!-- Manual Cleanup -->
 <section class="card">
   <h2>Manual Cleanup</h2>
   <form method="post" action="/admin/run-cleanup" class="inline-form">
     <button type="submit">Run Expired Video Cleanup</button>
   </form>
 </section>
-
-<section class="card">
-  <h2>Pipeline Worker Queue (API)</h2>
-  <p>Queue endpoint: <code>POST /api/pipeline-runs</code></p>
-  <p>List endpoint: <code>GET /api/pipeline-runs</code></p>
-  <p class="muted">Runs execute in the server-side worker container.</p>
-</section>
 {% endblock %}
-

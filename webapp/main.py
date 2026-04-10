@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import yaml
 from bson import ObjectId
 from fastapi import FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jwt import InvalidTokenError
@@ -25,6 +27,34 @@ base_dir = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(base_dir / "templates"))
 app.mount("/static", StaticFiles(directory=str(base_dir / "static")), name="static")
 _cleanup_task: asyncio.Task | None = None
+
+_PIPELINE_CATALOG: list[dict[str, str]] = []
+
+
+def _load_pipeline_catalog() -> list[dict[str, str]]:
+    """Scan pipeline_defs/*.yaml once and cache name + description + stability."""
+    catalog: list[dict[str, str]] = []
+    defs_dir = Path("pipeline_defs")
+    if not defs_dir.is_dir():
+        return catalog
+    for yf in sorted(defs_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(yf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = data.get("name", yf.stem)
+        desc = data.get("description", "")
+        if isinstance(desc, str):
+            desc = re.sub(r"\s+", " ", desc).strip()
+        catalog.append({
+            "name": name,
+            "description": desc,
+            "category": data.get("category", ""),
+            "stability": data.get("stability", ""),
+        })
+    return catalog
 
 
 def _current_user(request: Request) -> dict[str, Any] | None:
@@ -60,7 +90,12 @@ def _require_role(user: dict[str, Any], allowed: set[str]) -> None:
 
 def _template_context(request: Request, **kwargs: Any) -> dict[str, Any]:
     user = _current_user(request)
-    base = {"request": request, "current_user": user, "app_name": settings.app_name}
+    base = {
+        "request": request,
+        "current_user": user,
+        "app_name": settings.app_name,
+        "credit_cost": settings.credit_cost_per_run,
+    }
     base.update(kwargs)
     return base
 
@@ -94,14 +129,19 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_privileged(user: dict[str, Any]) -> bool:
+    return user.get("role") in {"admin", "manager"}
+
+
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _cleanup_task
+    global _cleanup_task, _PIPELINE_CATALOG
     Path(settings.videos_root).mkdir(parents=True, exist_ok=True)
     if settings.init_db_on_boot:
         run_bootstrap()
     cleanup_expired_videos()
     _cleanup_task = asyncio.create_task(_cleanup_loop())
+    _PIPELINE_CATALOG = _load_pipeline_catalog()
 
 
 @app.on_event("shutdown")
@@ -118,6 +158,10 @@ async def _cleanup_loop() -> None:
         cleanup_expired_videos()
 
 
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 def health():
     db = get_db()
@@ -128,11 +172,16 @@ def health():
     return JSONResponse({"status": "ok", "db": "up"})
 
 
+# ---------------------------------------------------------------------------
+# Public pages
+# ---------------------------------------------------------------------------
+
 @app.get("/")
 def home(request: Request):
-    db = get_db()
-    jobs = [_public_job(job) for job in db.video_jobs.find().sort("createdAt", -1).limit(100)]
-    return templates.TemplateResponse(request, "home.html", _template_context(request, jobs=jobs))
+    return templates.TemplateResponse(
+        request, "home.html",
+        _template_context(request, pipelines=_PIPELINE_CATALOG),
+    )
 
 
 @app.get("/signup")
@@ -153,6 +202,7 @@ def signup(
             request, "signup.html", _template_context(request, error="Email already exists"), status_code=400
         )
     user_doc = {
+        "name": email.split("@")[0].capitalize(),
         "email": email.strip().lower(),
         "passwordHash": hash_password(password),
         "role": "user",
@@ -226,15 +276,84 @@ def forgot_password(request: Request, email: str = Form(...)):
     )
 
 
+# ---------------------------------------------------------------------------
+# Dashboard (all authenticated users)
+# ---------------------------------------------------------------------------
+
 @app.get("/dashboard")
 def dashboard(request: Request):
     user = _require_user(request)
     db = get_db()
+    user_id_str = str(user["_id"])
     jobs = [
         _public_job(job)
-        for job in db.video_jobs.find({"requestedBy": str(user["_id"])}).sort("createdAt", -1).limit(50)
+        for job in db.video_jobs.find({"requestedBy": user_id_str}).sort("createdAt", -1).limit(50)
     ]
-    return templates.TemplateResponse(request, "dashboard.html", _template_context(request, jobs=jobs))
+    runs = [
+        _public_run(r)
+        for r in db.pipeline_runs.find({"requestedBy": user_id_str}).sort("createdAt", -1).limit(50)
+    ]
+    return templates.TemplateResponse(
+        request, "dashboard.html",
+        _template_context(request, jobs=jobs, runs=runs, pipelines=_PIPELINE_CATALOG),
+    )
+
+
+@app.post("/dashboard/create-project")
+def create_project_from_form(
+    request: Request,
+    pipeline_name: str = Form(...),
+    title: str = Form(...),
+    prompt: str = Form(...),
+    reference_url: str = Form(""),
+):
+    """Form-based project creation that redirects back to dashboard."""
+    user = _require_user(request)
+
+    pipeline_file = Path("pipeline_defs") / f"{pipeline_name}.yaml"
+    if not pipeline_file.exists():
+        raise HTTPException(status_code=400, detail=f"Unknown pipeline: {pipeline_name}")
+
+    if not _is_privileged(user):
+        cost = settings.credit_cost_per_run
+        if user.get("credits", 0) < cost:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient credits. You need {cost} credit(s) but have {user.get('credits', 0)}.",
+            )
+        db = get_db()
+        db.users.update_one(
+            {"_id": user["_id"], "credits": {"$gte": cost}},
+            {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
+        )
+    else:
+        db = get_db()
+
+    full_prompt = prompt
+    if reference_url.strip():
+        full_prompt = f"Reference: {reference_url.strip()}\n\n{prompt}"
+
+    project_id = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "untitled"
+
+    now = datetime.now(UTC)
+    run_doc = {
+        "pipelineName": pipeline_name,
+        "projectId": project_id,
+        "title": title,
+        "prompt": full_prompt,
+        "referenceUrl": reference_url.strip() or None,
+        "status": "queued",
+        "requestedBy": str(user["_id"]),
+        "creditsCharged": 0 if _is_privileged(user) else settings.credit_cost_per_run,
+        "createdAt": now,
+        "updatedAt": now,
+        "startedAt": None,
+        "completedAt": None,
+        "outputVideoPath": None,
+        "error": None,
+    }
+    db.pipeline_runs.insert_one(run_doc)
+    return RedirectResponse("/dashboard", status_code=303)
 
 
 @app.post("/profile")
@@ -248,6 +367,111 @@ def update_profile(request: Request, email: str = Form(...), password: str = For
     return RedirectResponse("/dashboard", status_code=303)
 
 
+# ---------------------------------------------------------------------------
+# Video download
+# ---------------------------------------------------------------------------
+
+def _safe_video_path(raw_path: str) -> Path | None:
+    """Resolve a video path and ensure it's within an allowed directory."""
+    resolved = Path(raw_path).resolve()
+    allowed_roots = [
+        Path(settings.videos_root).resolve(),
+        Path("/app/projects").resolve(),
+        Path("projects").resolve(),
+    ]
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            continue
+    return None
+
+
+@app.get("/download/{job_id}")
+def download_video(request: Request, job_id: str):
+    user = _require_user(request)
+    db = get_db()
+    job = db.video_jobs.find_one({"_id": ObjectId(job_id)})
+    if not job:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if not _is_privileged(user) and job.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if not job.get("videoExists") or not job.get("videoPath"):
+        raise HTTPException(status_code=410, detail="Video has been deleted. Metadata is still available.")
+
+    safe_path = _safe_video_path(job["videoPath"])
+    if not safe_path or not safe_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    filename = f"{job.get('projectId', 'video')}_{job.get('title', 'output')}.mp4"
+    filename = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+    return FileResponse(
+        path=str(safe_path),
+        media_type="video/mp4",
+        filename=filename,
+    )
+
+
+@app.get("/download/run/{run_id}")
+def download_run_video(request: Request, run_id: str):
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one({"_id": ObjectId(run_id)})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if not run.get("outputVideoPath"):
+        raise HTTPException(status_code=404, detail="No output video for this run")
+
+    safe_path = _safe_video_path(run["outputVideoPath"])
+    if not safe_path or not safe_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    filename = f"{run.get('projectId', 'video')}_{run.get('title', 'output')}.mp4"
+    filename = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+    return FileResponse(
+        path=str(safe_path),
+        media_type="video/mp4",
+        filename=filename,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Run detail page
+# ---------------------------------------------------------------------------
+
+@app.get("/dashboard/run/{run_id}")
+def run_detail(request: Request, run_id: str):
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one({"_id": ObjectId(run_id)})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    video_available = False
+    if run.get("outputVideoPath"):
+        safe = _safe_video_path(run["outputVideoPath"])
+        video_available = safe is not None and safe.exists()
+
+    return templates.TemplateResponse(
+        request, "run_detail.html",
+        _template_context(request, run=run, video_available=video_available),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard
+# ---------------------------------------------------------------------------
+
 @app.get("/admin-dashboard")
 def admin_dashboard(request: Request):
     user = _require_user(request)
@@ -255,10 +479,11 @@ def admin_dashboard(request: Request):
     db = get_db()
     users = list(db.users.find().sort("createdAt", -1))
     reset_requests = list(db.password_reset_requests.find({"status": "pending"}).sort("requestedAt", -1))
+    all_runs = [_public_run(r) for r in db.pipeline_runs.find().sort("createdAt", -1).limit(200)]
     return templates.TemplateResponse(
         request,
         "admin_dashboard.html",
-        _template_context(request, users=users, reset_requests=reset_requests),
+        _template_context(request, users=users, reset_requests=reset_requests, all_runs=all_runs),
     )
 
 
@@ -318,6 +543,15 @@ def run_cleanup(request: Request):
     return JSONResponse({"cleaned": cleaned})
 
 
+# ---------------------------------------------------------------------------
+# API endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/pipelines")
+def list_pipelines():
+    return JSONResponse({"items": _PIPELINE_CATALOG})
+
+
 @app.post("/api/jobs")
 def create_job(
     request: Request,
@@ -353,23 +587,43 @@ def enqueue_pipeline_run(
     project_id: str = Form(...),
     title: str = Form(...),
     prompt: str = Form(...),
+    reference_url: str = Form(""),
 ):
     actor = _require_user(request)
-    _require_role(actor, {"admin", "manager"})
 
     pipeline_file = Path("pipeline_defs") / f"{pipeline_name}.yaml"
     if not pipeline_file.exists():
         raise HTTPException(status_code=400, detail=f"Unknown pipeline: {pipeline_name}")
 
-    db = get_db()
+    if not _is_privileged(actor):
+        cost = settings.credit_cost_per_run
+        if actor.get("credits", 0) < cost:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient credits ({actor.get('credits', 0)}/{cost}).",
+            )
+        db = get_db()
+        db.users.update_one(
+            {"_id": actor["_id"], "credits": {"$gte": cost}},
+            {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
+        )
+    else:
+        db = get_db()
+
+    full_prompt = prompt
+    if reference_url.strip():
+        full_prompt = f"Reference: {reference_url.strip()}\n\n{prompt}"
+
     now = datetime.now(UTC)
     run_doc = {
         "pipelineName": pipeline_name,
         "projectId": project_id,
         "title": title,
-        "prompt": prompt,
+        "prompt": full_prompt,
+        "referenceUrl": reference_url.strip() or None,
         "status": "queued",
         "requestedBy": str(actor["_id"]),
+        "creditsCharged": 0 if _is_privileged(actor) else settings.credit_cost_per_run,
         "createdAt": now,
         "updatedAt": now,
         "startedAt": None,
@@ -384,8 +638,10 @@ def enqueue_pipeline_run(
 @app.get("/api/pipeline-runs")
 def list_pipeline_runs(request: Request):
     actor = _require_user(request)
-    _require_role(actor, {"admin", "manager"})
     db = get_db()
-    runs = [_public_run(r) for r in db.pipeline_runs.find().sort("createdAt", -1).limit(100)]
+    if _is_privileged(actor):
+        query: dict[str, Any] = {}
+    else:
+        query = {"requestedBy": str(actor["_id"])}
+    runs = [_public_run(r) for r in db.pipeline_runs.find(query).sort("createdAt", -1).limit(100)]
     return JSONResponse({"items": runs})
-

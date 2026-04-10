@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="card">
+  <div class="run-header">
+    <div>
+      <h1>{{ run.get("title", "Pipeline Run") }}</h1>
+      <p class="muted">
+        Pipeline: <b>{{ run.pipelineName | replace("-", " ") | title }}</b>
+        &nbsp;&middot;&nbsp; Project: <b>{{ run.projectId }}</b>
+      </p>
+    </div>
+    <div>
+      {% if run.status == "completed" %}
+        <span class="badge badge-ok badge-lg">Completed</span>
+      {% elif run.status == "running" %}
+        <span class="badge badge-info badge-lg">Running</span>
+      {% elif run.status == "queued" %}
+        <span class="badge badge-lg">Queued</span>
+      {% elif run.status == "failed" %}
+        <span class="badge badge-danger badge-lg">Failed</span>
+      {% else %}
+        <span class="badge badge-lg">{{ run.status }}</span>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- Download -->
+{% if video_available %}
+<section class="card">
+  <h2>Output Video</h2>
+  <p>Your video is ready for download. It will be automatically cleaned up after {{ "48" }} hours.</p>
+  <a href="/download/run/{{ run._id }}" class="btn btn-primary">Download Video</a>
+  <span class="muted" style="margin-left:12px">{{ run.outputVideoPath }}</span>
+</section>
+{% endif %}
+
+<!-- Details -->
+<section class="card">
+  <h2>Run Details</h2>
+  <div class="detail-grid">
+    <div class="detail-label">Created</div>
+    <div>{{ run.createdAt.strftime('%Y-%m-%d %H:%M:%S UTC') if run.createdAt else '-' }}</div>
+
+    <div class="detail-label">Started</div>
+    <div>{{ run.startedAt.strftime('%Y-%m-%d %H:%M:%S UTC') if run.get("startedAt") else '-' }}</div>
+
+    <div class="detail-label">Completed</div>
+    <div>{{ run.completedAt.strftime('%Y-%m-%d %H:%M:%S UTC') if run.get("completedAt") else '-' }}</div>
+
+    {% if run.get("creditsCharged") %}
+    <div class="detail-label">Credits Charged</div>
+    <div>{{ run.creditsCharged }}</div>
+    {% endif %}
+
+    {% if run.get("referenceUrl") %}
+    <div class="detail-label">Reference URL</div>
+    <div><a href="{{ run.referenceUrl }}" target="_blank" rel="noopener">{{ run.referenceUrl }}</a></div>
+    {% endif %}
+  </div>
+</section>
+
+<!-- Prompt -->
+<section class="card">
+  <h2>Prompt</h2>
+  <pre class="log-block">{{ run.get("prompt", "-") }}</pre>
+</section>
+
+<!-- Error -->
+{% if run.get("error") %}
+<section class="card">
+  <h2>Error</h2>
+  <pre class="log-block log-error">{{ run.error }}</pre>
+</section>
+{% endif %}
+
+<!-- Logs -->
+{% if run.get("stdout") %}
+<section class="card">
+  <h2>Output Log</h2>
+  <pre class="log-block">{{ run.stdout[-8000:] }}</pre>
+</section>
+{% endif %}
+
+{% if run.get("stderr") %}
+<section class="card">
+  <h2>Error Log</h2>
+  <pre class="log-block log-error">{{ run.stderr[-4000:] }}</pre>
+</section>
+{% endif %}
+
+<a href="/dashboard" class="btn btn-secondary">&larr; Back to Dashboard</a>
+
+{% endblock %}

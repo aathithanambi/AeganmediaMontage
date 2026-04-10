@@ -9,16 +9,17 @@ services:
     env_file:
       - ${APP_ENV_FILE:-.env}
     environment:
-      # Control app bootstrap explicitly from compose or env file.
       INIT_DB_ON_BOOT: ${INIT_DB_ON_BOOT:-true}
       VIDEOS_ROOT: /var/aeganmediamontage/videos
       MONGODB_DB: ${MONGODB_DB:-aeganmediamontage}
       MONGODB_URI: ${MONGODB_URI}
-      PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-}
+      PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}}
     ports:
       - "127.0.0.1:51004:41006"
     volumes:
       - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
+    mem_limit: 1g
+    cpus: 1.0
 
   pipeline-worker:
     image: aeganmediamontage-web:latest
@@ -29,9 +30,14 @@ services:
     environment:
       MONGODB_DB: ${MONGODB_DB:-aeganmediamontage}
       MONGODB_URI: ${MONGODB_URI}
-      PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-}
+      PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}}
       VIDEOS_ROOT: /var/aeganmediamontage/videos
     volumes:
       - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
+      - /var/aeganmediamontage/projects:/app/projects
     entrypoint: ["python", "-m", "webapp.worker"]
-
+    mem_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/appuser:size=256M,mode=0700

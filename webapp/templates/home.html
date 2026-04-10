@@ -1,42 +1,162 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="card">
-  <h1>AeganMediaMontage</h1>
-  <p>Latest processed projects are shown first. Video metadata remains even after auto-cleanup.</p>
+
+<!-- Hero -->
+<section class="hero">
+  <h1>AeganMedia<span class="accent">Montage</span></h1>
+  <p class="hero-sub">Turn ideas into production videos with AI. Describe what you want &mdash; our pipelines handle research, scripting, asset generation, editing, and final composition.</p>
+  <div class="hero-actions">
+    {% if current_user %}
+      <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
+    {% else %}
+      <a href="/signup" class="btn btn-primary">Get Started</a>
+      <a href="/login" class="btn btn-outline">Login</a>
+    {% endif %}
+  </div>
 </section>
 
+<!-- How It Works -->
 <section class="card">
-  <h2>Processed Videos</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Project</th>
-        <th>Title</th>
-        <th>Status</th>
-        <th>Created</th>
-        <th>Expires</th>
-        <th>Video</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for job in jobs %}
-      <tr>
-        <td>{{ job.projectId }}</td>
-        <td>{{ job.title }}</td>
-        <td>{{ job.status }}</td>
-        <td>{{ job.createdAt }}</td>
-        <td>{{ job.expiresAt }}</td>
-        <td>
-          {% if job.videoExists %}
-            <code>{{ job.videoPath }}</code>
-          {% else %}
-            <span class="muted">Deleted (metadata kept)</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <h2>How It Works</h2>
+  <div class="steps-grid">
+    <div class="step">
+      <div class="step-num">1</div>
+      <h3>Describe</h3>
+      <p>Write a prompt or paste a reference video URL. Tell us what you want to create.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <h3>AI Researches</h3>
+      <p>The agent researches your topic across the web, gathers data, and proposes concepts.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <h3>Assets Generated</h3>
+      <p>Images, video clips, narration, music, and subtitles are generated automatically.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <h3>Final Video</h3>
+      <p>Everything is composed into a polished, production-grade video ready to publish.</p>
+    </div>
+  </div>
 </section>
+
+<!-- Capabilities -->
+<section class="card">
+  <h2>What You Can Create</h2>
+  <div class="cap-grid">
+    <div class="cap-card">
+      <h3>Video Generation</h3>
+      <p>12 providers including Kling, Runway Gen-4, Google Veo 3, and local GPU options. AI-generated clips from text or image prompts.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Image Generation</h3>
+      <p>9 tools &mdash; FLUX, Google Imagen, DALL-E 3, Recraft, Grok, and free stock sources. Any visual style you need.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Voice &amp; Narration</h3>
+      <p>4 TTS providers: ElevenLabs, Google TTS (700+ voices), OpenAI, and free offline Piper. Professional narration in 50+ languages.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Music &amp; Sound</h3>
+      <p>Suno AI for full songs, ElevenLabs for music and sound effects. Royalty-free library support included.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Avatar &amp; Lip Sync</h3>
+      <p>SadTalker, MuseTalk, and Wav2Lip for talking-head videos. Turn a photo into a speaking presenter.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Post-Production</h3>
+      <p>FFmpeg + Remotion composition engine. Transitions, captions, color grading, subtitle burn-in, and audio mixing &mdash; all automated.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Pipelines -->
+<section class="card">
+  <h2>Production Pipelines</h2>
+  <p class="muted">Each pipeline is a complete workflow from idea to finished video. Select one when creating a project.</p>
+  <div class="pipeline-grid">
+    {% for p in pipelines %}
+    <div class="pipeline-card">
+      <div class="pipeline-header">
+        <h3>{{ p.name | replace("-", " ") | title }}</h3>
+        {% if p.stability == "production" %}
+          <span class="badge badge-ok">Production</span>
+        {% elif p.stability == "beta" %}
+          <span class="badge badge-warn">Beta</span>
+        {% else %}
+          <span class="badge">{{ p.stability }}</span>
+        {% endif %}
+      </div>
+      <p>{{ p.description }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<!-- Try These Prompts -->
+<section class="card">
+  <h2>Try These Prompts</h2>
+  <div class="prompt-grid">
+    <div class="prompt-card">
+      <span class="prompt-tag">Zero Keys</span>
+      <p>"Make a 45-second animated explainer about why the sky is blue"</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Reference Video</span>
+      <p>"Here's a YouTube Short I love. Make me something like this, but about quantum computing."</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Animation</span>
+      <p>"Create a 30-second Ghibli-style animated video of a magical floating library in the clouds"</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Cinematic</span>
+      <p>"Create a cinematic 30-second trailer: humanity receives a warning from 1000 years in the future"</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Product</span>
+      <p>"Make a product launch teaser for a fictional smart water bottle called AquaPulse"</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Education</span>
+      <p>"Create a 60-second video about the history of the internet, with narration and captions"</p>
+    </div>
+  </div>
+</section>
+
+<!-- Providers Overview -->
+<section class="card">
+  <h2>Supported Providers</h2>
+  <div class="providers-row">
+    <div>
+      <h3>Video (12)</h3>
+      <p class="muted">Kling, Runway Gen-4, Google Veo 3, Grok, MiniMax, HeyGen, WAN 2.1, Hunyuan, CogVideo, LTX-Video, Pexels, Pixabay</p>
+    </div>
+    <div>
+      <h3>Image (9)</h3>
+      <p class="muted">FLUX, Google Imagen, Grok, DALL-E 3, Recraft, Local Diffusion, Pexels, Pixabay, ManimCE</p>
+    </div>
+    <div>
+      <h3>Voice (4)</h3>
+      <p class="muted">ElevenLabs, Google TTS, OpenAI TTS, Piper (free)</p>
+    </div>
+    <div>
+      <h3>Music (3)</h3>
+      <p class="muted">Suno AI, ElevenLabs Music, ElevenLabs SFX</p>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+{% if not current_user %}
+<section class="hero cta-section">
+  <h2>Ready to Create?</h2>
+  <p>Sign up and start producing professional videos with AI.</p>
+  <a href="/signup" class="btn btn-primary">Get Started Free</a>
+</section>
+{% endif %}
+
 {% endblock %}
-

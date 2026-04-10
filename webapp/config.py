@@ -33,11 +33,16 @@ class Settings:
     seed_user_email: str = os.getenv("SEED_USER_EMAIL", "user@aegan.local")
     seed_user_password: str = os.getenv("SEED_USER_PASSWORD", "User@2026")
 
+    credit_cost_per_run: int = int(os.getenv("CREDIT_COST_PER_RUN", "1"))
+
     worker_poll_seconds: int = int(os.getenv("WORKER_POLL_SECONDS", "5"))
     worker_timeout_seconds: int = int(os.getenv("WORKER_TIMEOUT_SECONDS", "10800"))
     # command mode executes subprocess without shell; placeholders are resolved by worker.
     # supported placeholders: {pipeline}, {project_id}, {prompt_file}
-    pipeline_run_command: str = os.getenv("PIPELINE_RUN_COMMAND", "")
+    pipeline_run_command: str = os.getenv(
+        "PIPELINE_RUN_COMMAND",
+        "python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}",
+    )
 
 
 settings = Settings()
