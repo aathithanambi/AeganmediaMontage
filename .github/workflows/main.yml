@@ -59,6 +59,19 @@ jobs:
       - name: Export image tar
         run: docker save -o ${IMAGE_NAME}-${IMAGE_TAG}.tar ${IMAGE_NAME}:${IMAGE_TAG}
 
+      - name: Prepare remote upload directory
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.PORT }}
+          script: |
+            set -e
+            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage
+            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+            chmod 700 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+
       - name: Copy image to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -68,6 +81,8 @@ jobs:
           port: ${{ secrets.PORT }}
           source: "${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/"
+          overwrite: true
+          tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
 
       - name: Deploy on server
         uses: appleboy/ssh-action@v0.1.10
@@ -80,6 +95,8 @@ jobs:
             set -e
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage
             mkdir -p /var/aeganmediamontage/videos
+            mkdir -p /var/aeganmediamontage/projects
+            mkdir -p /var/aeganmediamontage/logs
 
             cat > /var/aeganmediamontage/.env <<'EOF'
             APP_NAME=AeganMediaMontage
@@ -117,18 +134,47 @@ jobs:
             docker run -d \
               --name aeganmediamontage-web \
               --restart unless-stopped \
+              --user "$(id -u):$(id -g)" \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 200 \
+              --memory="1g" \
+              --cpus="1.0" \
+              --tmpfs /tmp:size=128M,mode=1777 \
+              --tmpfs /var/tmp:size=64M,mode=1777 \
               --env-file /var/aeganmediamontage/.env \
               -v /var/aeganmediamontage/videos:/var/aeganmediamontage/videos \
+              -v /var/aeganmediamontage/projects:/app/projects \
+              --log-driver json-file \
+              --log-opt max-size=20m \
+              --log-opt max-file=5 \
               -p 127.0.0.1:51004:41006 \
               ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
             docker run -d \
               --name aeganmediamontage-worker \
               --restart unless-stopped \
+              --user "$(id -u):$(id -g)" \
+              --read-only \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 200 \
+              --memory="1g" \
+              --cpus="1.0" \
+              --tmpfs /tmp:size=128M,mode=1777 \
+              --tmpfs /var/tmp:size=64M,mode=1777 \
               --env-file /var/aeganmediamontage/.env \
               -v /var/aeganmediamontage/videos:/var/aeganmediamontage/videos \
+              -v /var/aeganmediamontage/projects:/app/projects \
+              --log-driver json-file \
+              --log-opt max-size=20m \
+              --log-opt max-file=5 \
               --entrypoint python \
               ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -m webapp.worker
+
+            docker logs --tail 200 aeganmediamontage-web > /var/aeganmediamontage/logs/web-startup.log || true
+            docker logs --tail 200 aeganmediamontage-worker > /var/aeganmediamontage/logs/worker-startup.log || true
 
             rm -f /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
 

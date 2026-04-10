@@ -1,7 +1,8 @@
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/appuser
 
 WORKDIR /app
 
@@ -9,11 +10,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd -g 10001 appgroup && useradd -m -u 10001 -g appgroup -s /usr/sbin/nologin appuser
+
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
-RUN chmod +x /app/docker/app-entrypoint.sh
+RUN chmod +x /app/docker/app-entrypoint.sh && \
+    mkdir -p /app/projects /var/aeganmediamontage/videos && \
+    chown -R appuser:appgroup /app /var/aeganmediamontage
+
+USER appuser:appgroup
 
 EXPOSE 41006
 
