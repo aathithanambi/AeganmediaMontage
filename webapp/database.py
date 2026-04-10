@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import certifi
 from pymongo import MongoClient
 from pymongo.database import Database
 
@@ -11,7 +12,10 @@ _client: MongoClient | None = None
 def get_client() -> MongoClient:
     global _client
     if _client is None:
-        _client = MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=5000)
+        kwargs = {"serverSelectionTimeoutMS": 5000}
+        if settings.mongodb_uri.startswith("mongodb+srv://") or "tls=true" in settings.mongodb_uri.lower():
+            kwargs["tlsCAFile"] = certifi.where()
+        _client = MongoClient(settings.mongodb_uri, **kwargs)
     return _client
 
 

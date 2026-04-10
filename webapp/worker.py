@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pymongo import ReturnDocument
+from pymongo.errors import PyMongoError
 
 from webapp.config import settings
 from webapp.database import get_db
@@ -144,7 +145,12 @@ def run_forever() -> None:
     print("pipeline-worker started")
     print(f"poll interval: {settings.worker_poll_seconds}s")
     while True:
-        run = _claim_next_run()
+        try:
+            run = _claim_next_run()
+        except PyMongoError as exc:
+            print(f"Mongo connection issue while polling queue: {exc}")
+            time.sleep(settings.worker_poll_seconds)
+            continue
         if run is None:
             time.sleep(settings.worker_poll_seconds)
             continue
