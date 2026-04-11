@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -25,7 +26,9 @@ from pathlib import Path
 from typing import Any
 
 PROJ_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJ_ROOT))
+if str(PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJ_ROOT))
+os.chdir(str(PROJ_ROOT))
 
 from tools.tool_registry import registry
 from tools.base_tool import ToolStatus
@@ -341,7 +344,19 @@ def step_compose_remotion(
 
 def run_pipeline(prompt_file: str) -> None:
     """Main pipeline execution."""
+    _log(f"Starting pipeline runner (cwd={os.getcwd()})")
+    _log(f"PROJ_ROOT={PROJ_ROOT}")
+    _log(f"Python={sys.executable} {sys.version_info.major}.{sys.version_info.minor}")
+
     _discover_tools()
+
+    available = registry.get_available()
+    unavailable = registry.get_unavailable()
+    _log(f"Tools discovered: {len(available)} available, {len(unavailable)} unavailable")
+    for t in available:
+        _log(f"  OK   {t.name} ({t.provider})")
+    for t in unavailable[:10]:
+        _log(f"  MISS {t.name} ({t.provider})")
 
     prompt_path = Path(prompt_file)
     if not prompt_path.exists():

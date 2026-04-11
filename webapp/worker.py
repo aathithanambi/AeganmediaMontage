@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import shlex
 import shutil
 import subprocess
+import sys
 import time
+import traceback
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -15,10 +18,18 @@ from pymongo.errors import PyMongoError
 from webapp.config import settings
 from webapp.database import get_db
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [worker] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    stream=sys.stdout,
+)
+log = logging.getLogger("pipeline-worker")
+
 
 def _claim_next_run() -> dict | None:
     db = get_db()
-    return db.pipeline_runs.find_one_and_update(
+    run = db.pipeline_runs.find_one_and_update(
         {"status": "queued"},
         {
             "$set": {
@@ -30,9 +41,16 @@ def _claim_next_run() -> dict | None:
         sort=[("createdAt", 1)],
         return_document=ReturnDocument.AFTER,
     )
+    if run:
+        log.info(
+            "Claimed run %s | pipeline=%s project=%s",
+            run["_id"], run.get("pipelineName"), run.get("projectId"),
+        )
+    return run
 
 
 def _mark_failed(run_id, message: str) -> None:
+    log.error("Run %s FAILED: %s", run_id, message[:300])
     db = get_db()
     run = db.pipeline_runs.find_one_and_update(
         {"_id": run_id},
@@ -43,13 +61,13 @@ def _mark_failed(run_id, message: str) -> None:
             {"_id": ObjectId(run["requestedBy"])},
             {"$inc": {"credits": run["creditsCharged"]}, "$set": {"updatedAt": datetime.now(UTC)}},
         )
-        print(f"Refunded {run['creditsCharged']} credit(s) to user {run['requestedBy']}")
+        log.info("Refunded %d credit(s) to user %s", run["creditsCharged"], run["requestedBy"])
 
 
 def _copy_to_videos_root(source_path: str, project_id: str) -> str | None:
-    """Copy video to videos_root for reliable serving and cleanup."""
     src = Path(source_path)
     if not src.exists():
+        log.warning("Source video not found for copy: %s", source_path)
         return None
     dest_dir = Path(settings.videos_root)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -57,9 +75,10 @@ def _copy_to_videos_root(source_path: str, project_id: str) -> str | None:
     dest = dest_dir / f"{project_id}_{ts}{src.suffix}"
     try:
         shutil.copy2(str(src), str(dest))
+        log.info("Copied video to %s", dest)
         return str(dest)
     except OSError as exc:
-        print(f"Failed to copy video to videos_root: {exc}")
+        log.error("Failed to copy video to videos_root: %s", exc)
         return source_path
 
 
@@ -72,6 +91,10 @@ def _mark_completed(run: dict, stdout: str, stderr: str) -> None:
         copied = _copy_to_videos_root(raw_video_path, run["projectId"])
         if copied:
             video_path = copied
+    log.info(
+        "Run %s COMPLETED | video=%s",
+        run["_id"], video_path or "(none)",
+    )
     db.pipeline_runs.update_one(
         {"_id": run["_id"]},
         {
@@ -113,7 +136,8 @@ def _resolve_output_path(run: dict, stdout: str) -> str | None:
 
 
 def _execute_run(run: dict) -> None:
-    if not settings.pipeline_run_command.strip():
+    cmd_template = settings.pipeline_run_command.strip()
+    if not cmd_template:
         _mark_failed(
             run["_id"],
             "PIPELINE_RUN_COMMAND is empty. Configure command to execute pipeline runner/agent on this server.",
@@ -139,12 +163,15 @@ def _execute_run(run: dict) -> None:
         encoding="utf-8",
     )
 
-    command = settings.pipeline_run_command.format(
+    command = cmd_template.format(
         pipeline=run["pipelineName"],
         project_id=run["projectId"],
         prompt_file=str(prompt_file),
     )
+    log.info("Executing: %s", command)
+
     args = shlex.split(command)
+    start_ts = time.monotonic()
     proc = subprocess.run(
         args,
         capture_output=True,
@@ -152,6 +179,20 @@ def _execute_run(run: dict) -> None:
         timeout=settings.worker_timeout_seconds,
         check=False,
     )
+    elapsed = round(time.monotonic() - start_ts, 1)
+
+    log.info(
+        "Command finished | exit=%d elapsed=%.1fs stdout=%d bytes stderr=%d bytes",
+        proc.returncode, elapsed, len(proc.stdout), len(proc.stderr),
+    )
+
+    if proc.stdout:
+        for line in proc.stdout.splitlines()[-30:]:
+            log.info("  stdout> %s", line)
+    if proc.stderr:
+        for line in proc.stderr.splitlines()[-20:]:
+            log.warning("  stderr> %s", line)
+
     if proc.returncode != 0:
         _mark_failed(
             run["_id"],
@@ -173,26 +214,33 @@ def _execute_run(run: dict) -> None:
 
 
 def run_forever() -> None:
-    print("pipeline-worker started")
-    print(f"poll interval: {settings.worker_poll_seconds}s")
+    log.info("pipeline-worker started")
+    log.info("poll interval: %ds", settings.worker_poll_seconds)
+    log.info("PIPELINE_RUN_COMMAND: %s", settings.pipeline_run_command or "(empty)")
+    log.info("VIDEOS_ROOT: %s", settings.videos_root)
+    log.info("WORKER_TIMEOUT: %ds", settings.worker_timeout_seconds)
+
     while True:
         try:
             run = _claim_next_run()
         except PyMongoError as exc:
-            print(f"Mongo connection issue while polling queue: {exc}")
+            log.error("Mongo connection issue while polling: %s", exc)
             time.sleep(settings.worker_poll_seconds)
             continue
         if run is None:
             time.sleep(settings.worker_poll_seconds)
             continue
+        log.info("=" * 60)
+        log.info("Processing run %s", run["_id"])
         try:
             _execute_run(run)
         except subprocess.TimeoutExpired:
             _mark_failed(run["_id"], "Pipeline command timed out.")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            log.error("Worker exception: %s\n%s", exc, traceback.format_exc())
             _mark_failed(run["_id"], f"Worker exception: {exc}")
+        log.info("=" * 60)
 
 
 if __name__ == "__main__":
     run_forever()
-
