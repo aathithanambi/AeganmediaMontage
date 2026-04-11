@@ -163,11 +163,20 @@ def _execute_run(run: dict) -> None:
         encoding="utf-8",
     )
 
-    command = cmd_template.format(
-        pipeline=run["pipelineName"],
-        project_id=run["projectId"],
-        prompt_file=str(prompt_file),
-    )
+    try:
+        command = cmd_template.format(
+            pipeline=run["pipelineName"],
+            project_id=run["projectId"],
+            prompt_file=str(prompt_file),
+        )
+    except KeyError as exc:
+        _mark_failed(
+            run["_id"],
+            f"PIPELINE_RUN_COMMAND contains unknown placeholder {exc}. "
+            f"Expected only {{pipeline}}, {{project_id}}, {{prompt_file}}. "
+            f"Current value: {cmd_template[:200]}",
+        )
+        return
     log.info("Executing: %s", command)
 
     args = shlex.split(command)

@@ -137,7 +137,7 @@ jobs:
             SEED_MANAGER_PASSWORD=${{ secrets.SEED_MANAGER_PASSWORD }}
             SEED_USER_EMAIL=${{ secrets.SEED_USER_EMAIL }}
             SEED_USER_PASSWORD=${{ secrets.SEED_USER_PASSWORD }}
-            PIPELINE_RUN_COMMAND=${{ secrets.PIPELINE_RUN_COMMAND || 'python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}' }}
+            PIPELINE_RUN_COMMAND=python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}
             WORKER_POLL_SECONDS=5
             WORKER_TIMEOUT_SECONDS=10800
             CREDIT_COST_PER_RUN=${{ secrets.CREDIT_COST_PER_RUN || '1' }}
