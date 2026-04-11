@@ -196,6 +196,7 @@ jobs:
               --tmpfs /tmp:size=512M,mode=1777 \
               --tmpfs /home/appuser:size=256M,uid=$(id -u),gid=$(id -g),mode=0700 \
               --env-file /var/aeganmediamontage/.env \
+              -e REMOTION_CACHE_DIR=/tmp/remotion-cache \
               -v /var/aeganmediamontage/videos:/var/aeganmediamontage/videos \
               -v /var/aeganmediamontage/projects:/app/projects \
               --log-driver json-file \

@@ -3,7 +3,8 @@ FROM python:3.11-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOME=/home/appuser \
-    NODE_OPTIONS="--max-old-space-size=2048"
+    NODE_OPTIONS="--max-old-space-size=2048" \
+    REMOTION_CACHE_DIR="/tmp/remotion-cache"
 
 WORKDIR /app
 
@@ -40,6 +41,8 @@ RUN cd /app/remotion-composer && npm install --omit=dev 2>/dev/null || npm insta
 COPY . /app
 RUN chmod +x /app/docker/app-entrypoint.sh && \
     mkdir -p /app/projects /var/aeganmediamontage/videos && \
+    mkdir -p /app/remotion-composer/node_modules/.remotion && \
+    chmod -R 777 /app/remotion-composer/node_modules/.remotion && \
     chown -R appuser:appgroup /app /var/aeganmediamontage
 
 USER appuser:appgroup

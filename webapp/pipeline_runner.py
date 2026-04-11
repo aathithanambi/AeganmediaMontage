@@ -77,13 +77,13 @@ def _gemini_available() -> bool:
     return bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"))
 
 
-def _gemini_generate(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str | None:
+def _gemini_generate(prompt: str, max_tokens: int = 4096, retries: int = 4) -> str | None:
     """Call Google Gemini with retry for rate limits. Returns text or None."""
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return None
 
-    models = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"]
 
     for model in models:
         url = GEMINI_ENDPOINT.format(model=model) + f"?key={api_key}"
@@ -99,20 +99,26 @@ def _gemini_generate(prompt: str, max_tokens: int = 4096, retries: int = 3) -> s
             try:
                 resp = requests.post(url, json=body, timeout=90)
                 if resp.status_code == 429:
-                    wait = min(2 ** (attempt + 1), 30)
-                    _log(f"Gemini rate-limited (429), retrying in {wait}s "
-                         f"(attempt {attempt+1}/{retries})")
+                    wait = min(5 * (attempt + 1), 60)
+                    _log(f"Gemini rate-limited (429) on {model}, "
+                         f"waiting {wait}s (attempt {attempt+1}/{retries})")
                     time.sleep(wait)
                     continue
+                if resp.status_code == 404:
+                    _log(f"Gemini model {model} not found (404), trying next model")
+                    break
                 resp.raise_for_status()
                 data = resp.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             except requests.exceptions.HTTPError as e:
                 if "429" in str(e) and attempt < retries - 1:
-                    wait = min(2 ** (attempt + 1), 30)
-                    _log(f"Gemini rate-limited, retrying in {wait}s")
+                    wait = min(5 * (attempt + 1), 60)
+                    _log(f"Gemini rate-limited on {model}, waiting {wait}s")
                     time.sleep(wait)
                     continue
+                if "404" in str(e):
+                    _log(f"Gemini model {model} not available, trying next")
+                    break
                 _log(f"Gemini API error ({model}): {e}")
                 break
             except Exception as e:
@@ -155,7 +161,12 @@ def _extract_keywords(text: str, max_words: int = 4) -> list[str]:
         "your", "create", "video", "make", "please", "need", "want", "second",
         "minute", "seconds", "minutes", "same", "type", "based", "sharing",
         "link", "wan", "tthe", "referance", "http", "https", "www", "com",
-        "youtube", "watch",
+        "youtube", "watch", "audio", "attached", "file", "shared", "sharing",
+        "match", "matching", "sure", "tht", "images", "used", "using",
+        "upload", "uploaded", "downloading", "download", "creating",
+        "created", "generate", "generated", "prompt", "promt",
+        "subtitle", "subtitles", "relavient", "relevant", "preparation",
+        "check", "checking", "trying", "tried", "try",
     }
     words = re.findall(r"[a-zA-Z]{3,}", text.lower())
     keywords = [w for w in words if w not in stop]
@@ -538,18 +549,22 @@ Respond ONLY with the JSON array, no other text. Example format:
     if not keywords:
         keywords = _extract_keywords(script)
     if not keywords:
-        keywords = ["technology", "innovation", "digital"]
+        keywords = _extract_keywords(title) if title else []
+    if not keywords:
+        keywords = ["nature", "landscape", "abstract"]
 
     scenes: list[dict[str, str]] = []
     for i, section in enumerate(sections):
         section_kw = _extract_keywords(section, max_words=3)
         query = " ".join(section_kw[:3]) if section_kw else keywords[i % len(keywords)]
+        if len(query.strip()) < 3:
+            query = keywords[i % len(keywords)]
         scenes.append({
             "narration": section,
             "image_prompt": (
                 f"Professional cinematic photograph, 16:9, dramatic lighting, "
                 f"shallow depth of field. Subject: {query}. "
-                f"Context: {section[:100]}. Photo-realistic, high detail."
+                f"Photo-realistic, high detail."
             ),
             "search_query": query,
             "mood": "professional",
@@ -651,6 +666,104 @@ Respond ONLY with the JSON array of translated strings."""
 
 
 # ---------------------------------------------------------------------------
+# Step 3c: Audio transcription (for uploaded audio)
+# ---------------------------------------------------------------------------
+
+def step_transcribe_audio(audio_path: str, language: str = "english") -> str | None:
+    """Transcribe uploaded audio to text using ElevenLabs Scribe or Gemini.
+
+    This is critical when the user uploads audio — without transcription,
+    the pipeline cannot know what the audio says and generates irrelevant images.
+    """
+    lang_code = SUPPORTED_LANGUAGES.get(language, "en")
+
+    # Method 1: ElevenLabs Scribe API (best quality, supports many languages)
+    el_key = os.environ.get("ELEVENLABS_API_KEY", "")
+    if el_key:
+        _log(f"Transcribing audio via ElevenLabs Scribe ({language})...")
+        try:
+            with open(audio_path, "rb") as f:
+                resp = requests.post(
+                    "https://api.elevenlabs.io/v1/speech-to-text",
+                    headers={"xi-api-key": el_key},
+                    files={"file": (Path(audio_path).name, f, "audio/mpeg")},
+                    data={
+                        "model_id": "scribe_v1",
+                        "language_code": lang_code,
+                    },
+                    timeout=120,
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data.get("text", "")
+                if text and len(text.strip()) > 10:
+                    _log(f"Transcription complete: {len(text)} chars")
+                    return text.strip()
+                _log("Transcription returned empty text")
+            else:
+                _log(f"ElevenLabs Scribe failed: {resp.status_code} {resp.text[:200]}")
+        except Exception as e:
+            _log(f"ElevenLabs Scribe error: {e}")
+
+    # Method 2: Google Cloud Speech-to-Text (via Gemini API)
+    google_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if google_key:
+        _log(f"Transcribing audio via Google Gemini ({language})...")
+        try:
+            import base64
+            with open(audio_path, "rb") as f:
+                audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+            ext = Path(audio_path).suffix.lower().lstrip(".")
+            mime_map = {
+                "mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav",
+                "ogg": "audio/ogg", "aac": "audio/aac", "flac": "audio/flac",
+            }
+            mime_type = mime_map.get(ext, "audio/mpeg")
+
+            gemini_url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                "gemini-2.0-flash:generateContent"
+                f"?key={google_key}"
+            )
+            body = {
+                "contents": [{
+                    "parts": [
+                        {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
+                        {"text": f"Transcribe this audio to text. The audio is in {language}. "
+                                 f"Return ONLY the transcribed text, nothing else."},
+                    ]
+                }],
+                "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1},
+            }
+            resp = requests.post(gemini_url, json=body, timeout=120)
+            if resp.status_code == 200:
+                data = resp.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                if text and len(text.strip()) > 10:
+                    _log(f"Gemini transcription complete: {len(text)} chars")
+                    return text.strip()
+            else:
+                _log(f"Gemini transcription failed: {resp.status_code}")
+        except Exception as e:
+            _log(f"Gemini transcription error: {e}")
+
+    # Method 3: Use the transcriber tool if available
+    tool = _get_tool("transcriber")
+    if tool is not None:
+        _log("Transcribing audio via whisperx...")
+        result = tool.execute({"audio_path": audio_path, "language": lang_code})
+        if result.success and result.data:
+            text = result.data.get("text", "")
+            if text and len(text.strip()) > 10:
+                _log(f"Whisperx transcription: {len(text)} chars")
+                return text.strip()
+
+    _log("Audio transcription unavailable — cannot determine audio content")
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Step 4: Image generation / fetching (scene-aware)
 # ---------------------------------------------------------------------------
 
@@ -662,7 +775,7 @@ def step_fetch_images(
     output_dir.mkdir(parents=True, exist_ok=True)
     images: list[str] = []
 
-    ai_tools = ["flux_image", "google_imagen", "openai_image", "grok_image"]
+    ai_tools = ["google_imagen", "flux_image", "openai_image", "grok_image"]
     ai_tool = None
     ai_tool_name = ""
     for name in ai_tools:
@@ -976,8 +1089,8 @@ def step_compose_slideshow(
                 "format=yuv420p",
             ]
 
-            if sections and i < len(sections):
-                sub_text = _escape_drawtext(sections[i][:100])
+            if sections and i < len(sections) and sections[i].strip():
+                sub_text = _escape_drawtext(sections[i].strip()[:100])
                 vf_parts.append(
                     f"drawtext=text='{sub_text}'"
                     f":fontsize=32:fontcolor=white"
@@ -1198,8 +1311,8 @@ def step_compose_remotion(
             "imagePath": str(Path(img_path).resolve()),
             "durationInFrames": 180,
         }
-        if sections and i < len(sections):
-            scene["subtitle"] = sections[i]
+        if sections and i < len(sections) and sections[i].strip():
+            scene["subtitle"] = sections[i].strip()
         composition_data["scenes"].append(scene)
 
     if audio_path:
@@ -1325,13 +1438,27 @@ def run_pipeline(prompt_file: str) -> None:
     _log(f"Target duration: {target_dur}s")
     _log(f"Reference-driven: {reference_driven}")
 
-    # --- Phase 2: Script generation (LLM-powered) ---
+    # --- Phase 1b: Transcribe uploaded audio ---
     has_custom_audio = bool(uploaded_audio and Path(uploaded_audio).exists())
+    audio_transcript = None
     if has_custom_audio:
         audio_dur = _probe_duration(uploaded_audio)
-        _log(f"Custom audio duration: {audio_dur:.1f}s — skipping narration script")
-        target_dur = max(audio_dur, 30.0)
-        script = content_prompt if len(content_prompt) > 30 else f"{title}. {content_prompt}"
+        _log(f"Custom audio duration: {audio_dur:.1f}s")
+        target_dur = max(audio_dur, 15.0)
+        audio_transcript = step_transcribe_audio(uploaded_audio, language=audio_lang)
+        if audio_transcript:
+            _log(f"Audio transcript ({len(audio_transcript)} chars):\n{audio_transcript[:300]}...")
+        else:
+            _log("WARNING: Could not transcribe audio — images may not match audio content")
+
+    # --- Phase 2: Script generation (LLM-powered) ---
+    if has_custom_audio:
+        if audio_transcript:
+            script = audio_transcript
+        else:
+            _log("WARNING: No transcript available for uploaded audio — "
+                 "using title-based script (images may not match audio)")
+            script = title if title and title != project_id else "Visual presentation"
     else:
         script = step_generate_script(
             content_prompt, title, ref_summary,
@@ -1354,8 +1481,12 @@ def run_pipeline(prompt_file: str) -> None:
 
     narration_sections = [s.get("narration", "") for s in scene_plan]
 
-    # --- Phase 3b: Subtitle translation ---
-    if subtitle_lang and subtitle_lang != audio_lang:
+    # When using custom audio without a transcript, don't show
+    # raw prompt or placeholder text as subtitles
+    if has_custom_audio and not audio_transcript:
+        _log("Skipping subtitles — no transcript available for uploaded audio")
+        subtitle_sections = [""] * len(narration_sections)
+    elif subtitle_lang and subtitle_lang != audio_lang:
         subtitle_sections = step_translate_subtitles(
             narration_sections, audio_lang, subtitle_lang,
         )
