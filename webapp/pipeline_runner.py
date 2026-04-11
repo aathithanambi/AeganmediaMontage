@@ -3,11 +3,12 @@
 Orchestrates OpenMontage tools with LLM intelligence:
   1. (optional) Download + analyze reference video
   2. Generate professional narration script via LLM
-  3. Create scene-by-scene plan with specific image prompts
+  3. Create scene-by-scene plan with image prompts + SFX hints
   4. Generate/fetch scene-matched images
   5. Generate narration audio (TTS)
   6. Fetch mood-matched background music
-  7. Compose final video with Ken Burns motion, crossfades, subtitles
+  6b. Generate AI sound effects per scene (ElevenLabs + Freesound)
+  7. Compose final video with Ken Burns motion, crossfades, subtitles, SFX
 
 Uses Google Gemini for script/scene intelligence when GOOGLE_API_KEY is set.
 Falls back to template-based generation when no LLM is available.
@@ -167,6 +168,109 @@ def _extract_keywords(text: str, max_words: int = 4) -> list[str]:
     return unique[:max_words * 3]
 
 
+SUPPORTED_LANGUAGES = {
+    "english": "en", "tamil": "ta", "hindi": "hi", "telugu": "te",
+    "kannada": "kn", "malayalam": "ml", "bengali": "bn", "marathi": "mr",
+    "gujarati": "gu", "punjabi": "pa", "urdu": "ur", "arabic": "ar",
+    "spanish": "es", "french": "fr", "german": "de", "italian": "it",
+    "portuguese": "pt", "japanese": "ja", "korean": "ko", "chinese": "zh",
+    "russian": "ru", "dutch": "nl", "polish": "pl", "turkish": "tr",
+    "thai": "th", "vietnamese": "vi", "indonesian": "id", "malay": "ms",
+    "swedish": "sv", "norwegian": "no", "danish": "da", "finnish": "fi",
+}
+
+
+def _parse_production_intent(raw_prompt: str, ref_summary: str | None = None) -> dict[str, Any]:
+    """Use Gemini to separate production instructions from creative content.
+
+    Returns a dict with keys:
+      content_prompt  - the actual topic/story to create (NOT instructions)
+      audio_language  - language for voiceover (default: english)
+      subtitle_language - language for subtitles (default: same as audio)
+      target_duration - video length in seconds (default: 60)
+      style_notes     - editing/visual style instructions
+      reference_driven - True if the user mainly relies on the reference video for content
+    """
+    defaults: dict[str, Any] = {
+        "content_prompt": raw_prompt,
+        "audio_language": "english",
+        "subtitle_language": "",
+        "target_duration": 60,
+        "style_notes": "",
+        "reference_driven": False,
+    }
+
+    if not _gemini_available():
+        dur_match = re.search(r'(\d+)\s*(?:sec|second)', raw_prompt, re.IGNORECASE)
+        if dur_match:
+            defaults["target_duration"] = int(dur_match.group(1))
+        for lang in SUPPORTED_LANGUAGES:
+            if lang in raw_prompt.lower():
+                if re.search(rf'audio\b.*\b{lang}|{lang}\b.*\baudio|voiceover\b.*\b{lang}', raw_prompt, re.IGNORECASE):
+                    defaults["audio_language"] = lang
+                if re.search(rf'subtitle\b.*\b{lang}|{lang}\b.*\bsubtitle|caption\b.*\b{lang}', raw_prompt, re.IGNORECASE):
+                    defaults["subtitle_language"] = lang
+        return defaults
+
+    ref_context = ""
+    if ref_summary:
+        ref_context = f"\nReference video analysis:\n{ref_summary[:500]}\n"
+
+    llm_prompt = f"""Analyze this video creation request. Separate the PRODUCTION INSTRUCTIONS from the CONTENT TOPIC.
+
+User's raw prompt:
+\"\"\"{raw_prompt}\"\"\"
+{ref_context}
+Return a JSON object with these keys:
+- "content_prompt": The actual topic/story/subject to create a video about. Extract ONLY the creative content, NOT production instructions like duration, language, format. If the user mainly says "create something like the reference" without specifying a topic, set this to a description of what the reference video is about.
+- "audio_language": Language for voiceover/narration (default "english"). Common: "tamil", "hindi", "telugu", "spanish", etc.
+- "subtitle_language": Language for on-screen subtitles. Empty string "" if same as audio or not requested.
+- "target_duration": Video length in seconds (integer). Default 60 if not specified.
+- "style_notes": Any visual/editing style instructions (e.g., "cinematic", "fast-paced", "same editing as reference")
+- "reference_driven": true if the user's main intent is to recreate/match a reference video's content, false if they have their own topic
+
+IMPORTANT: Do NOT include phrases like "I want to create", "make a video about", "with subtitles" in content_prompt. Those are instructions, not content.
+
+Example: If user says "Create a 15 second video about space exploration in Tamil with English subtitles, cinematic style"
+→ content_prompt: "space exploration — the wonders of the cosmos, rocket launches, planets, and humanity's quest to explore the stars"
+→ audio_language: "tamil"
+→ subtitle_language: "english"
+→ target_duration: 15
+→ style_notes: "cinematic"
+→ reference_driven: false
+
+Respond ONLY with the JSON object."""
+
+    _log("Parsing production intent via Gemini...")
+    result = _gemini_generate(llm_prompt, max_tokens=1024)
+    if result:
+        try:
+            cleaned = result.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r'^```\w*\n?', '', cleaned)
+                cleaned = re.sub(r'\n?```$', '', cleaned)
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                for key in defaults:
+                    if key in parsed and parsed[key] is not None:
+                        defaults[key] = parsed[key]
+                if isinstance(defaults["target_duration"], str):
+                    defaults["target_duration"] = int(re.sub(r'\D', '', defaults["target_duration"]) or "60")
+                defaults["audio_language"] = defaults["audio_language"].lower().strip()
+                defaults["subtitle_language"] = defaults["subtitle_language"].lower().strip()
+                _log(f"Intent parsed: content='{defaults['content_prompt'][:100]}...', "
+                     f"audio={defaults['audio_language']}, sub={defaults['subtitle_language']}, "
+                     f"dur={defaults['target_duration']}s, ref_driven={defaults['reference_driven']}")
+                return defaults
+        except (json.JSONDecodeError, ValueError) as e:
+            _log(f"Intent parse failed: {e}")
+
+    dur_match = re.search(r'(\d+)\s*(?:sec|second)', raw_prompt, re.IGNORECASE)
+    if dur_match:
+        defaults["target_duration"] = int(dur_match.group(1))
+    return defaults
+
+
 def _split_script_sections(text: str, target_count: int = 6) -> list[str]:
     """Split narration text into roughly equal sections for scene visuals."""
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
@@ -295,42 +399,62 @@ def step_generate_script(
     title: str,
     ref_summary: str | None = None,
     target_duration: int = 60,
+    language: str = "english",
+    reference_driven: bool = False,
 ) -> str:
     """Generate a professional narration script using LLM or template fallback."""
     if _gemini_available():
         ref_context = ""
         if ref_summary:
             ref_context = (
-                f"\n\nReference video analysis (match this style and content approach):"
+                f"\n\nReference video analysis (match this style, pacing, and content approach):"
                 f"\n{ref_summary}\n"
             )
+
+        lang_instruction = ""
+        if language != "english":
+            lang_instruction = (
+                f"\nCRITICAL: Write the ENTIRE script in {language.upper()} language. "
+                f"Every word of narration must be in {language}. "
+                f"Do NOT write in English. The script will be read by a {language} TTS engine.\n"
+            )
+
+        ref_driven_instruction = ""
+        if reference_driven and ref_summary:
+            ref_driven_instruction = (
+                "\nIMPORTANT: The user wants to recreate content similar to the reference video. "
+                "Use the reference video's topic, storyline, and narrative approach as your primary guide. "
+                "Create an original script that covers the same subject matter with the same style and tone.\n"
+            )
+
+        word_count = int(target_duration * 2.5) if language == "english" else int(target_duration * 2)
 
         llm_prompt = f"""You are a professional video scriptwriter. Write a narration script for a {target_duration}-second video.
 
 Topic/Prompt: {prompt}
 Title: {title}
-{ref_context}
+{ref_context}{lang_instruction}{ref_driven_instruction}
 Requirements:
 - Write ONLY the narration text that will be spoken aloud
-- Target approximately {target_duration} seconds of speech (~{target_duration * 2} words)
+- Target approximately {target_duration} seconds of speech (~{word_count} words)
 - Start with a compelling hook (first sentence should grab attention)
 - Use clear, conversational language suitable for text-to-speech
 - Include specific facts, examples, or details relevant to the topic
 - End with a strong closing statement
 - Do NOT include stage directions, timestamps, or [brackets]
 - Do NOT include "Welcome to" or generic filler phrases
-- Make every sentence informative and relevant to: {prompt}
+- Make every sentence informative and relevant
 
 Write the script now:"""
 
-        _log("Generating script via Gemini...")
+        _log(f"Generating {language} script via Gemini...")
         result = _gemini_generate(llm_prompt, max_tokens=2048)
-        if result and len(result.strip()) > 50:
+        if result and len(result.strip()) > 30:
             script = result.strip()
             script = re.sub(r'\[.*?\]', '', script)
             script = re.sub(r'\(.*?\)', '', script)
             script = re.sub(r'\n{3,}', '\n\n', script)
-            _log(f"LLM script generated: {len(script)} chars, ~{len(script.split())} words")
+            _log(f"LLM script generated ({language}): {len(script)} chars")
             return script
 
     _log("LLM unavailable — using template script")
@@ -385,10 +509,11 @@ For each scene, provide a JSON array with exactly {scene_count} objects. Each ob
 - "image_prompt": a detailed prompt for AI image generation (describe the visual: subject, setting, lighting, mood, colors, camera angle). Be SPECIFIC to the topic, not generic.
 - "search_query": 2-4 word search query for stock photo fallback, highly specific to the scene content
 - "mood": one word describing the scene mood (e.g., inspiring, dramatic, calm, energetic)
+- "sfx_prompt": (optional, only if the scene benefits from a sound effect) a short description of a sound effect that enhances this scene. Examples: "glass shattering", "crowd cheering in stadium", "rocket engine igniting", "gentle ocean waves", "thunder and lightning". Leave as "" if no SFX is needed for that scene. Do NOT put background music here, only specific sound effects tied to the visual content.
 
 Respond ONLY with the JSON array, no other text. Example format:
 [
-  {{"narration": "...", "image_prompt": "...", "search_query": "...", "mood": "..."}},
+  {{"narration": "...", "image_prompt": "...", "search_query": "...", "mood": "...", "sfx_prompt": "..."}},
   ...
 ]"""
 
@@ -436,29 +561,93 @@ Respond ONLY with the JSON array, no other text. Example format:
 # Step 3: TTS
 # ---------------------------------------------------------------------------
 
-def step_tts(text: str, output_path: Path) -> str | None:
-    """Generate narration audio. Prefers high-quality cloud voices."""
+def step_tts(text: str, output_path: Path, language: str = "english") -> str | None:
+    """Generate narration audio in the specified language."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    lang_code = SUPPORTED_LANGUAGES.get(language, "en")
+    is_english = lang_code == "en"
+
     tts_tools = ["elevenlabs_tts", "google_tts", "openai_tts", "piper_tts"]
+    if not is_english:
+        tts_tools = ["elevenlabs_tts", "google_tts", "openai_tts"]
+
     for name in tts_tools:
         tool = _get_tool(name)
         if tool is None:
             continue
-        _log(f"Generating narration with {name}")
+        _log(f"Generating {language} narration with {name}")
         params: dict[str, Any] = {"text": text, "output_path": str(output_path)}
-        if name == "google_tts":
-            params["voice"] = "en-US-Studio-Q"
+        if name == "elevenlabs_tts":
+            params["model_id"] = "eleven_multilingual_v2"
+        elif name == "google_tts":
+            voice_map = {
+                "ta": "ta-IN-Standard-A", "hi": "hi-IN-Standard-A",
+                "te": "te-IN-Standard-A", "kn": "kn-IN-Standard-A",
+                "ml": "ml-IN-Standard-A", "bn": "bn-IN-Standard-A",
+                "es": "es-ES-Studio-F", "fr": "fr-FR-Studio-A",
+                "de": "de-DE-Studio-B", "ja": "ja-JP-Standard-A",
+            }
+            params["voice"] = voice_map.get(lang_code, "en-US-Studio-Q")
             params["speaking_rate"] = 0.95
         elif name == "piper_tts":
+            if not is_english:
+                continue
             params["model"] = "en_US-lessac-medium"
             params["download_dir"] = str(Path.home() / ".local" / "share" / "piper_models")
         result = tool.execute(params)
         if result.success and result.artifacts:
-            _log(f"Narration generated: {result.artifacts[0]}")
+            _log(f"{language} narration generated: {result.artifacts[0]}")
             return result.artifacts[0]
         _log(f"{name} failed: {result.error}")
     _log("No TTS tool available — narration skipped")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Step 3b: Subtitle translation
+# ---------------------------------------------------------------------------
+
+def step_translate_subtitles(
+    narration_sections: list[str],
+    source_language: str,
+    target_language: str,
+) -> list[str]:
+    """Translate narration sections for subtitle display in a different language."""
+    if source_language == target_language or not target_language:
+        return narration_sections
+
+    if not _gemini_available():
+        _log("Gemini unavailable — cannot translate subtitles")
+        return narration_sections
+
+    _log(f"Translating subtitles from {source_language} to {target_language}...")
+    joined = json.dumps(narration_sections, ensure_ascii=False)
+
+    llm_prompt = f"""Translate each of these narration lines from {source_language} to {target_language}.
+Return a JSON array of translated strings, maintaining the same array length and order.
+Keep translations natural and concise (suitable for video subtitles — short, readable lines).
+
+Input:
+{joined}
+
+Respond ONLY with the JSON array of translated strings."""
+
+    result = _gemini_generate(llm_prompt, max_tokens=2048)
+    if result:
+        try:
+            cleaned = result.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r'^```\w*\n?', '', cleaned)
+                cleaned = re.sub(r'\n?```$', '', cleaned)
+            translated = json.loads(cleaned)
+            if isinstance(translated, list) and len(translated) == len(narration_sections):
+                _log(f"Subtitles translated: {len(translated)} sections → {target_language}")
+                return translated
+        except (json.JSONDecodeError, ValueError) as e:
+            _log(f"Subtitle translation parse failed: {e}")
+
+    _log("Subtitle translation failed — using original narration")
+    return narration_sections
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +772,124 @@ def step_fetch_music(
 
 
 # ---------------------------------------------------------------------------
+# Step 5b: AI Sound Effects (ElevenLabs /v1/sound-generation + Freesound)
+# ---------------------------------------------------------------------------
+
+def _elevenlabs_sfx_available() -> bool:
+    return bool(os.environ.get("ELEVENLABS_API_KEY"))
+
+
+def _generate_sfx_elevenlabs(
+    prompt: str, output_path: Path, duration: float = 5.0
+) -> str | None:
+    """Generate a sound effect using ElevenLabs Sound Generation API."""
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "")
+    if not api_key:
+        return None
+
+    url = "https://api.elevenlabs.io/v1/sound-generation"
+    headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
+    body: dict[str, Any] = {
+        "text": prompt,
+        "duration_seconds": min(max(duration, 0.5), 22.0),
+        "prompt_influence": 0.5,
+    }
+
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, headers=headers, json=body, timeout=60)
+            if resp.status_code == 429:
+                wait = 2 ** attempt * 3
+                _log(f"SFX rate-limited, retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(resp.content)
+            if output_path.exists() and output_path.stat().st_size > 100:
+                return str(output_path)
+            return None
+        except Exception as e:
+            _log(f"ElevenLabs SFX attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    return None
+
+
+def _search_sfx_freesound(
+    query: str, output_path: Path, max_duration: float = 10.0
+) -> str | None:
+    """Search Freesound for a matching sound effect clip."""
+    tool = _get_tool("freesound_music")
+    if tool is None:
+        return None
+    result = tool.execute({
+        "query": query,
+        "min_duration": 1,
+        "max_duration": int(max_duration),
+        "output_path": str(output_path),
+    })
+    if result.success and result.artifacts:
+        return result.artifacts[0]
+    return None
+
+
+def step_generate_sfx(
+    scene_plan: list[dict[str, str]],
+    output_dir: Path,
+    seconds_per_scene: float = 6.0,
+) -> list[dict[str, Any]]:
+    """Generate sound effects for scenes that request them.
+
+    Returns a list of dicts with keys: path, scene_index, offset_seconds, duration.
+    """
+    sfx_entries: list[dict[str, Any]] = []
+    sfx_scenes = [
+        (i, s.get("sfx_prompt", "").strip())
+        for i, s in enumerate(scene_plan)
+        if s.get("sfx_prompt", "").strip()
+    ]
+
+    if not sfx_scenes:
+        _log("No SFX requested for any scene")
+        return sfx_entries
+
+    _log(f"Generating sound effects for {len(sfx_scenes)} scene(s)")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    has_elevenlabs = _elevenlabs_sfx_available()
+
+    for scene_idx, sfx_prompt in sfx_scenes:
+        out_file = output_dir / f"sfx_{scene_idx:02d}.mp3"
+        sfx_duration = min(seconds_per_scene - 0.5, 8.0)
+
+        sfx_path = None
+        if has_elevenlabs:
+            _log(f"  Scene {scene_idx+1} SFX via ElevenLabs: \"{sfx_prompt}\"")
+            sfx_path = _generate_sfx_elevenlabs(sfx_prompt, out_file, sfx_duration)
+
+        if not sfx_path:
+            _log(f"  Scene {scene_idx+1} SFX via Freesound: \"{sfx_prompt}\"")
+            sfx_path = _search_sfx_freesound(sfx_prompt, out_file, sfx_duration + 5)
+
+        if sfx_path:
+            actual_dur = _probe_duration(sfx_path)
+            offset = scene_idx * seconds_per_scene
+            sfx_entries.append({
+                "path": sfx_path,
+                "scene_index": scene_idx,
+                "offset_seconds": offset,
+                "duration": actual_dur,
+            })
+            _log(f"  Scene {scene_idx+1} SFX ready: {actual_dur:.1f}s at offset {offset:.1f}s")
+        else:
+            _log(f"  Scene {scene_idx+1} SFX generation failed — skipping")
+
+    _log(f"Total SFX clips generated: {len(sfx_entries)}")
+    return sfx_entries
+
+
+# ---------------------------------------------------------------------------
 # FFmpeg helpers
 # ---------------------------------------------------------------------------
 
@@ -615,8 +922,9 @@ def step_compose_slideshow(
     seconds_per_image: float = 6.0,
     sections: list[str] | None = None,
     music_path: str | None = None,
+    sfx_entries: list[dict[str, Any]] | None = None,
 ) -> str | None:
-    """Compose a high-quality slideshow: Ken Burns motion, crossfades, subtitles."""
+    """Compose a high-quality slideshow: Ken Burns motion, crossfades, subtitles, SFX."""
     if not images:
         _log("No images to compose")
         return None
@@ -753,25 +1061,80 @@ def step_compose_slideshow(
 
         has_narration = audio_path and Path(audio_path).exists()
         has_music = music_path and Path(music_path).exists()
+        valid_sfx = [
+            s for s in (sfx_entries or [])
+            if s.get("path") and Path(s["path"]).exists()
+        ]
 
-        if has_narration and has_music:
-            _log("Mixing narration + background music")
-            mixed_audio = temp_dir / "mixed_audio.aac"
-            subprocess.run([
-                "ffmpeg", "-y",
-                "-i", audio_path, "-i", music_path,
-                "-filter_complex",
-                "[0:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=1.0[voice];"
-                "[1:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,volume=0.15[bgm];"
-                "[voice][bgm]amix=inputs=2:duration=first:dropout_transition=3[out]",
-                "-map", "[out]", "-c:a", "aac", "-b:a", "192k",
-                str(mixed_audio),
-            ], capture_output=True, text=True, timeout=120, check=True)
-            audio_final = str(mixed_audio)
-        elif has_narration:
-            audio_final = audio_path
-        elif has_music:
-            audio_final = music_path
+        if has_narration or has_music or valid_sfx:
+            audio_inputs: list[str] = []
+            filter_parts: list[str] = []
+            amix_labels: list[str] = []
+            idx = 0
+
+            if has_narration:
+                audio_inputs.extend(["-i", audio_path])
+                filter_parts.append(
+                    f"[{idx}:a]aformat=sample_fmts=fltp:sample_rates=44100"
+                    f":channel_layouts=stereo,volume=1.0[voice]"
+                )
+                amix_labels.append("[voice]")
+                idx += 1
+
+            if has_music:
+                audio_inputs.extend(["-i", music_path])
+                filter_parts.append(
+                    f"[{idx}:a]aformat=sample_fmts=fltp:sample_rates=44100"
+                    f":channel_layouts=stereo,volume=0.15[bgm]"
+                )
+                amix_labels.append("[bgm]")
+                idx += 1
+
+            if valid_sfx:
+                total_video_dur = len(images) * seconds_per_image
+                _log(f"Mixing {len(valid_sfx)} SFX clips into audio")
+                for si, sfx in enumerate(valid_sfx):
+                    audio_inputs.extend(["-i", sfx["path"]])
+                    offset = sfx.get("offset_seconds", 0)
+                    label = f"sfx{si}"
+                    filter_parts.append(
+                        f"[{idx}:a]aformat=sample_fmts=fltp:sample_rates=44100"
+                        f":channel_layouts=stereo,volume=0.6,"
+                        f"adelay={int(offset * 1000)}|{int(offset * 1000)},"
+                        f"apad=whole_dur={total_video_dur}[{label}]"
+                    )
+                    amix_labels.append(f"[{label}]")
+                    idx += 1
+
+            if len(amix_labels) >= 2:
+                _log(f"Mixing {len(amix_labels)} audio tracks (voice+BGM+SFX)")
+                mixed_audio = temp_dir / "mixed_audio.aac"
+                duration_mode = "first" if has_narration else "longest"
+                filter_graph = (
+                    ";".join(filter_parts)
+                    + ";"
+                    + "".join(amix_labels)
+                    + f"amix=inputs={len(amix_labels)}"
+                    + f":duration={duration_mode}:dropout_transition=3[out]"
+                )
+                cmd = (
+                    ["ffmpeg", "-y"]
+                    + audio_inputs
+                    + ["-filter_complex", filter_graph,
+                       "-map", "[out]", "-c:a", "aac", "-b:a", "192k",
+                       str(mixed_audio)]
+                )
+                subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=180, check=True)
+                audio_final = str(mixed_audio)
+            elif has_narration:
+                audio_final = audio_path
+            elif has_music:
+                audio_final = music_path
+            elif valid_sfx:
+                audio_final = valid_sfx[0]["path"]
+            else:
+                audio_final = None
         else:
             audio_final = None
 
@@ -810,6 +1173,7 @@ def step_compose_remotion(
     title: str | None = None,
     sections: list[str] | None = None,
     music_path: str | None = None,
+    sfx_entries: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Attempt Remotion render. Falls back to FFmpeg slideshow."""
     composer_dir = PROJ_ROOT / "remotion-composer"
@@ -842,6 +1206,17 @@ def step_compose_remotion(
         composition_data["audioPath"] = str(Path(audio_path).resolve())
     if music_path and Path(music_path).exists():
         composition_data["musicPath"] = str(Path(music_path).resolve())
+    if sfx_entries:
+        composition_data["sfxTracks"] = [
+            {
+                "path": str(Path(s["path"]).resolve()),
+                "sceneIndex": s["scene_index"],
+                "offsetSeconds": s["offset_seconds"],
+                "duration": s["duration"],
+            }
+            for s in sfx_entries
+            if s.get("path") and Path(s["path"]).exists()
+        ]
 
     props_file = (output_path.parent / "remotion_props.json").resolve()
     props_file.write_text(json.dumps(composition_data, indent=2), encoding="utf-8")
@@ -904,13 +1279,16 @@ def run_pipeline(prompt_file: str) -> None:
     title = payload.get("title", project_id)
     raw_prompt = payload.get("prompt", "")
     ref_url = payload.get("referenceUrl", "")
-
-    prompt = _strip_urls(raw_prompt)
+    uploaded_audio = payload.get("uploadedAudioPath", "")
+    form_audio_lang = (payload.get("audioLanguage") or "").strip().lower()
+    form_subtitle_lang = (payload.get("subtitleLanguage") or "").strip().lower()
 
     _log(f"Pipeline: {pipeline_name}")
     _log(f"Project:  {project_id}")
     _log(f"Title:    {title}")
-    _log(f"Prompt:   {prompt[:200]}...")
+    _log(f"Raw prompt: {raw_prompt[:300]}...")
+    if uploaded_audio:
+        _log(f"Custom audio: {uploaded_audio}")
 
     project_dir = Path("projects") / project_id
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -918,7 +1296,7 @@ def run_pipeline(prompt_file: str) -> None:
     renders_dir = project_dir / "renders"
     renders_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Phase 1: Reference analysis ---
+    # --- Phase 0: Parse production intent ---
     ref_summary = None
     ref_path = step_download_reference(ref_url, project_dir) if ref_url else None
     if ref_path:
@@ -928,28 +1306,74 @@ def run_pipeline(prompt_file: str) -> None:
             ref_summary = _summarize_reference(analysis)
             _log(f"Reference summary:\n{ref_summary[:300]}...")
 
+    intent = _parse_production_intent(raw_prompt, ref_summary)
+    content_prompt = intent["content_prompt"]
+    audio_lang = form_audio_lang or intent["audio_language"]
+    subtitle_lang = form_subtitle_lang or intent["subtitle_language"]
+    target_dur = intent["target_duration"]
+    reference_driven = intent["reference_driven"]
+    style_notes = intent.get("style_notes", "")
+
+    if audio_lang not in SUPPORTED_LANGUAGES and audio_lang != "english":
+        audio_lang = "english"
+    if subtitle_lang and subtitle_lang not in SUPPORTED_LANGUAGES and subtitle_lang != "english":
+        subtitle_lang = ""
+
+    _log(f"Content prompt: {content_prompt[:200]}...")
+    _log(f"Audio language: {audio_lang}")
+    _log(f"Subtitle language: {subtitle_lang or '(same as audio)'}")
+    _log(f"Target duration: {target_dur}s")
+    _log(f"Reference-driven: {reference_driven}")
+
     # --- Phase 2: Script generation (LLM-powered) ---
-    script = step_generate_script(prompt, title, ref_summary, target_duration=60)
-    _log(f"Script ({len(script.split())} words):\n{script[:300]}...")
+    has_custom_audio = bool(uploaded_audio and Path(uploaded_audio).exists())
+    if has_custom_audio:
+        audio_dur = _probe_duration(uploaded_audio)
+        _log(f"Custom audio duration: {audio_dur:.1f}s — skipping narration script")
+        target_dur = max(audio_dur, 30.0)
+        script = content_prompt if len(content_prompt) > 30 else f"{title}. {content_prompt}"
+    else:
+        script = step_generate_script(
+            content_prompt, title, ref_summary,
+            target_duration=target_dur,
+            language=audio_lang,
+            reference_driven=reference_driven,
+        )
+    _log(f"Script ({len(script)} chars):\n{script[:300]}...")
 
     # --- Phase 3: Scene plan (LLM-powered) ---
+    scene_count = max(2, min(10, int(target_dur / 5)))
     scene_plan = step_generate_scene_plan(
-        script, prompt, title, ref_summary, scene_count=6,
+        script, content_prompt, title, ref_summary, scene_count=scene_count,
     )
     _log(f"Scene plan: {len(scene_plan)} scenes")
     for i, s in enumerate(scene_plan):
+        sfx_tag = f" sfx=\"{s['sfx_prompt']}\"" if s.get("sfx_prompt") else ""
         _log(f"  Scene {i+1}: query='{s.get('search_query', '?')}' "
-             f"mood={s.get('mood', '?')}")
+             f"mood={s.get('mood', '?')}{sfx_tag}")
 
     narration_sections = [s.get("narration", "") for s in scene_plan]
-    keywords = _extract_keywords(prompt)
+
+    # --- Phase 3b: Subtitle translation ---
+    if subtitle_lang and subtitle_lang != audio_lang:
+        subtitle_sections = step_translate_subtitles(
+            narration_sections, audio_lang, subtitle_lang,
+        )
+    else:
+        subtitle_sections = narration_sections
+
+    keywords = _extract_keywords(content_prompt)
     if not keywords:
         keywords = _extract_keywords(script)
     if not keywords:
         keywords = ["technology", "innovation", "digital"]
 
-    # --- Phase 4: TTS ---
-    audio_path = step_tts(script, assets_dir / "narration.wav")
+    # --- Phase 4: TTS (skipped if custom audio uploaded) ---
+    if uploaded_audio and Path(uploaded_audio).exists():
+        _log(f"Using uploaded audio: {uploaded_audio}")
+        audio_path = uploaded_audio
+    else:
+        audio_path = step_tts(script, assets_dir / "narration.wav", language=audio_lang)
 
     # --- Phase 5: Scene-matched images ---
     images = step_fetch_images(scene_plan, assets_dir / "images")
@@ -972,23 +1396,29 @@ def run_pipeline(prompt_file: str) -> None:
 
     # --- Phase 6: Background music ---
     narration_dur = _probe_duration(audio_path) if audio_path else 0
-    target_dur = max(narration_dur, len(images) * 6.0, 30.0)
+    effective_dur = max(narration_dur, len(images) * (target_dur / max(len(images), 1)), target_dur)
     music_path = step_fetch_music(
         scene_plan, keywords, assets_dir / "music",
-        target_duration=target_dur,
+        target_duration=effective_dur,
     )
+
+    # --- Phase 6b: AI Sound Effects ---
+    spi = effective_dur / max(len(images), 1)
+    sfx_entries = step_generate_sfx(scene_plan, assets_dir / "sfx", seconds_per_scene=spi)
 
     # --- Phase 7: Compose final video ---
     final_path = renders_dir / "final.mp4"
 
     video_path = step_compose_remotion(
-        images, audio_path, final_path, title, narration_sections, music_path,
+        images, audio_path, final_path, title, subtitle_sections, music_path,
+        sfx_entries=sfx_entries,
     )
 
     if not video_path:
         video_path = step_compose_slideshow(
             images, audio_path, final_path,
-            sections=narration_sections, music_path=music_path,
+            sections=subtitle_sections, music_path=music_path,
+            sfx_entries=sfx_entries,
         )
 
     if video_path and Path(video_path).exists():

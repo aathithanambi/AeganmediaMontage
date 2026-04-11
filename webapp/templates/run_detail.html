@@ -76,6 +76,16 @@
     <div class="detail-label">Reference URL</div>
     <div><a href="{{ run.referenceUrl }}" target="_blank" rel="noopener">{{ run.referenceUrl }}</a></div>
     {% endif %}
+
+    {% if run.get("audioLanguage") %}
+    <div class="detail-label">Audio Language</div>
+    <div>{{ run.audioLanguage | capitalize }}</div>
+    {% endif %}
+
+    {% if run.get("subtitleLanguage") %}
+    <div class="detail-label">Subtitle Language</div>
+    <div>{{ run.subtitleLanguage | capitalize }}</div>
+    {% endif %}
   </div>
 </section>
 

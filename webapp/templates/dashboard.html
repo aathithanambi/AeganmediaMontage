@@ -25,7 +25,7 @@
       You need at least <b>{{ credit_cost }}</b> credit(s) to create a project. Contact an admin or manager to get credits.
     </div>
   {% endif %}
-  <form method="post" action="/dashboard/create-project" class="create-form">
+  <form method="post" action="/dashboard/create-project" enctype="multipart/form-data" class="create-form">
     <div class="form-row">
       <div class="form-group">
         <label for="pipeline_name">Pipeline</label>
@@ -48,6 +48,54 @@
     <div class="form-group">
       <label for="reference_url">Reference Video URL <span class="muted">(optional &mdash; YouTube, TikTok, Reel, or any video URL)</span></label>
       <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." />
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="audio_language">Audio / Narration Language</label>
+        <select name="audio_language" id="audio_language">
+          <option value="">Auto-detect from prompt</option>
+          <option value="english">English</option>
+          <option value="tamil">Tamil (தமிழ்)</option>
+          <option value="hindi">Hindi (हिन्दी)</option>
+          <option value="telugu">Telugu (తెలుగు)</option>
+          <option value="kannada">Kannada (ಕನ್ನಡ)</option>
+          <option value="malayalam">Malayalam (മലയാളം)</option>
+          <option value="bengali">Bengali (বাংলা)</option>
+          <option value="marathi">Marathi (मराठी)</option>
+          <option value="gujarati">Gujarati (ગુજરાતી)</option>
+          <option value="spanish">Spanish (Español)</option>
+          <option value="french">French (Français)</option>
+          <option value="german">German (Deutsch)</option>
+          <option value="japanese">Japanese (日本語)</option>
+          <option value="korean">Korean (한국어)</option>
+          <option value="arabic">Arabic (العربية)</option>
+          <option value="portuguese">Portuguese (Português)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="subtitle_language">Subtitle Language <span class="muted">(optional)</span></label>
+        <select name="subtitle_language" id="subtitle_language">
+          <option value="">Same as audio (no translation)</option>
+          <option value="english">English</option>
+          <option value="tamil">Tamil (தமிழ்)</option>
+          <option value="hindi">Hindi (हिन्दी)</option>
+          <option value="telugu">Telugu (తెలుగు)</option>
+          <option value="spanish">Spanish (Español)</option>
+          <option value="french">French (Français)</option>
+          <option value="german">German (Deutsch)</option>
+          <option value="japanese">Japanese (日本語)</option>
+          <option value="korean">Korean (한국어)</option>
+          <option value="arabic">Arabic (العربية)</option>
+          <option value="portuguese">Portuguese (Português)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="audio_file">Custom Audio / Voiceover <span class="muted">(optional &mdash; MP3, WAV, M4A, up to 50 MB)</span></label>
+      <input type="file" name="audio_file" id="audio_file" accept=".mp3,.wav,.m4a,.ogg,.aac,.flac" />
+      <p class="muted" style="font-size:0.82rem;margin-top:4px">
+        Upload your own narration or audio track. If provided, the pipeline will use this audio instead of AI-generated narration and create visuals to match it.
+      </p>
     </div>
     <button type="submit" class="btn btn-primary"
       {% if current_user.role not in ["admin", "manager"] and current_user.credits < credit_cost %}disabled{% endif %}>

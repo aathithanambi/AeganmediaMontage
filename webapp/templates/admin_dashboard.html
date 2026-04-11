@@ -5,6 +5,107 @@
   <p>Admin: full rights. Manager: can manage credits and website operations, but cannot delete users.</p>
 </section>
 
+<!-- API Keys & AI Services -->
+<section class="card">
+  <h2>AI Services &amp; API Keys</h2>
+  <div class="api-summary">
+    <div class="api-stat">
+      <span class="api-stat-num">{{ api_summary.configured }}</span>
+      <span class="api-stat-label">/ {{ api_summary.total }} Keys Configured</span>
+    </div>
+    <div class="api-stat">
+      <span class="api-stat-num">{{ api_summary.tools_available }}</span>
+      <span class="api-stat-label">/ {{ api_summary.tools_total }} Tools Available</span>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Category</th>
+          <th>Tier</th>
+          <th>Status</th>
+          <th>Key</th>
+          <th>Tools Enabled</th>
+          <th>Credits / Usage</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key in api_keys %}
+        <tr>
+          <td>
+            <a href="{{ key.url }}" target="_blank" rel="noopener" class="api-name">{{ key.name }}</a>
+          </td>
+          <td class="muted">{{ key.category }}</td>
+          <td>
+            {% if key.tier == "Free" %}
+              <span class="badge badge-ok">Free</span>
+            {% elif key.tier == "Free Tier" %}
+              <span class="badge badge-info">Free Tier</span>
+            {% else %}
+              <span class="badge">Paid</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if key.configured %}
+              <span class="badge badge-ok">Active</span>
+            {% else %}
+              <span class="badge badge-danger">Not Set</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if key.configured %}
+              <code class="key-masked">{{ key.masked_value }}</code>
+            {% else %}
+              <a href="{{ key.url }}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">Get Key</a>
+            {% endif %}
+          </td>
+          <td>
+            <div class="tool-tags">
+              {% for tool in key.tools %}
+                <span class="tool-tag {% if key.configured %}tool-active{% else %}tool-inactive{% endif %}">{{ tool }}</span>
+              {% endfor %}
+            </div>
+          </td>
+          <td>
+            {% if key.balance %}
+              {% if key.balance.error %}
+                <span class="muted">{{ key.balance.error }}</span>
+              {% elif key.balance.characters_limit is defined %}
+                <div class="credit-bar-container">
+                  <div class="credit-bar-fill" style="width: {{ ((key.balance.characters_used / key.balance.characters_limit) * 100) if key.balance.characters_limit > 0 else 0 }}%"></div>
+                </div>
+                <span class="muted" style="font-size:0.8rem">
+                  {{ "{:,}".format(key.balance.characters_remaining) }} / {{ "{:,}".format(key.balance.characters_limit) }} chars
+                  {% if key.balance.plan %}&middot; {{ key.balance.plan }}{% endif %}
+                </span>
+              {% elif key.balance.remaining_quota is defined %}
+                <span>{{ key.balance.remaining_quota }} credits left</span>
+                {% if key.balance.plan %}<span class="muted"> &middot; {{ key.balance.plan }}</span>{% endif %}
+              {% endif %}
+            {% elif key.configured %}
+              {% if key.tier == "Free" %}
+                <span class="muted">Unlimited</span>
+              {% else %}
+                <span class="muted">Check provider</span>
+              {% endif %}
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="muted" style="margin-top:12px;font-size:0.85rem">
+    API keys are loaded from server environment variables. To add or update keys, set them in your
+    <code>.env</code> file (local) or GitHub Environment Secrets (deployment) and redeploy.
+  </p>
+</section>
+
 <!-- All Pipeline Runs -->
 <section class="card">
   <h2>All Pipeline Runs</h2>

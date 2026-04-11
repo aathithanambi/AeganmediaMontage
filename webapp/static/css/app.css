@@ -987,6 +987,99 @@ h2 {
   }
 }
 
+/* --------------- API Keys dashboard --------------- */
+.api-summary {
+  display: flex;
+  gap: 32px;
+  margin-bottom: 20px;
+}
+
+.api-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.api-stat-num {
+  font-size: 2rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #00b4d8, #7209b7);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.api-stat-label {
+  color: #888;
+  font-size: 0.9rem;
+}
+
+.api-name {
+  font-weight: 600;
+  color: #00b4d8;
+  text-decoration: none;
+}
+
+.api-name:hover {
+  text-decoration: underline;
+}
+
+.key-masked {
+  font-size: 0.8rem;
+  background: rgba(255,255,255,0.05);
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: #aaa;
+  letter-spacing: 0.5px;
+}
+
+.tool-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tool-tag {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.tool-active {
+  background: rgba(0, 180, 216, 0.15);
+  color: #00b4d8;
+  border: 1px solid rgba(0, 180, 216, 0.3);
+}
+
+.tool-inactive {
+  background: rgba(255, 255, 255, 0.03);
+  color: #555;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.credit-bar-container {
+  width: 100%;
+  max-width: 120px;
+  height: 8px;
+  background: #1a1a2e;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.credit-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #00b4d8, #f72585);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.btn-sm {
+  font-size: 0.78rem;
+  padding: 4px 10px;
+}
+
 /* --------------- Progress bar --------------- */
 .progress-bar-container {
   width: 100%;

@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 from bson import ObjectId
-from fastapi import FastAPI, Form, HTTPException, Request, status
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -19,6 +19,7 @@ from webapp.bootstrap import run_bootstrap
 from webapp.cleanup import cleanup_expired_videos
 from webapp.config import settings
 from webapp.database import get_db
+from webapp.api_keys import get_api_key_status, get_api_summary
 from webapp.security import create_access_token, decode_access_token, hash_password, verify_password
 
 app = FastAPI(title=settings.app_name)
@@ -299,15 +300,22 @@ def dashboard(request: Request):
     )
 
 
+MAX_AUDIO_SIZE = 50 * 1024 * 1024  # 50 MB
+ALLOWED_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
+
+
 @app.post("/dashboard/create-project")
-def create_project_from_form(
+async def create_project_from_form(
     request: Request,
     pipeline_name: str = Form(...),
     title: str = Form(...),
     prompt: str = Form(...),
     reference_url: str = Form(""),
+    audio_language: str = Form(""),
+    subtitle_language: str = Form(""),
+    audio_file: UploadFile | None = File(None),
 ):
-    """Form-based project creation that redirects back to dashboard."""
+    """Form-based project creation with optional audio upload."""
     user = _require_user(request)
 
     pipeline_file = Path("pipeline_defs") / f"{pipeline_name}.yaml"
@@ -335,6 +343,25 @@ def create_project_from_form(
 
     project_id = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "untitled"
 
+    uploaded_audio_path: str | None = None
+    if audio_file and audio_file.filename:
+        ext = Path(audio_file.filename).suffix.lower()
+        if ext not in ALLOWED_AUDIO_EXTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Audio format {ext} not supported. Use: {', '.join(ALLOWED_AUDIO_EXTS)}",
+            )
+        audio_data = await audio_file.read()
+        if len(audio_data) > MAX_AUDIO_SIZE:
+            raise HTTPException(status_code=400, detail="Audio file exceeds 50 MB limit")
+
+        audio_dir = Path("projects") / project_id / "assets"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", audio_file.filename)
+        dest = audio_dir / f"uploaded_audio{ext}"
+        dest.write_bytes(audio_data)
+        uploaded_audio_path = str(dest)
+
     now = datetime.now(UTC)
     run_doc = {
         "pipelineName": pipeline_name,
@@ -342,6 +369,9 @@ def create_project_from_form(
         "title": title,
         "prompt": full_prompt,
         "referenceUrl": reference_url.strip() or None,
+        "audioLanguage": audio_language.strip() or None,
+        "subtitleLanguage": subtitle_language.strip() or None,
+        "uploadedAudioPath": uploaded_audio_path,
         "status": "queued",
         "requestedBy": str(user["_id"]),
         "creditsCharged": 0 if _is_privileged(user) else settings.credit_cost_per_run,
@@ -527,10 +557,15 @@ def admin_dashboard(request: Request):
     users = list(db.users.find().sort("createdAt", -1))
     reset_requests = list(db.password_reset_requests.find({"status": "pending"}).sort("requestedAt", -1))
     all_runs = [_public_run(r) for r in db.pipeline_runs.find().sort("createdAt", -1).limit(200)]
+    api_keys = get_api_key_status()
+    api_summary = get_api_summary()
     return templates.TemplateResponse(
         request,
         "admin_dashboard.html",
-        _template_context(request, users=users, reset_requests=reset_requests, all_runs=all_runs),
+        _template_context(
+            request, users=users, reset_requests=reset_requests,
+            all_runs=all_runs, api_keys=api_keys, api_summary=api_summary,
+        ),
     )
 
 
