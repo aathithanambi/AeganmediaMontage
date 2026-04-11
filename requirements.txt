@@ -18,3 +18,5 @@ PyJWT>=2.9
 
 # Pipeline runner tools
 yt-dlp>=2024.0
+Pillow>=10.0
+numpy>=1.24
