@@ -27,6 +27,11 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt \
     && pip install --no-cache-dir piper-tts 2>/dev/null || echo "piper-tts optional, skipping"
 
+# Pre-download Piper voice model
+RUN mkdir -p /home/appuser/.local/share/piper_models && \
+    python -c "from piper.download import ensure_voice_exists; ensure_voice_exists('en_US-lessac-medium', ['/home/appuser/.local/share/piper_models'], '/home/appuser/.local/share/piper_models')" 2>/dev/null \
+    || echo "Piper voice download skipped (will use cloud TTS)"
+
 # Remotion composer (Node.js deps)
 COPY remotion-composer/package.json remotion-composer/package-lock.json* /app/remotion-composer/
 RUN cd /app/remotion-composer && npm install --omit=dev 2>/dev/null || npm install 2>/dev/null || echo "remotion install skipped"

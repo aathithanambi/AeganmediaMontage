@@ -987,6 +987,44 @@ h2 {
   }
 }
 
+/* --------------- Progress bar --------------- */
+.progress-bar-container {
+  width: 100%;
+  height: 24px;
+  background: #1a1a2e;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #00b4d8, #7209b7, #f72585);
+  background-size: 200% 100%;
+  animation: progress-glow 2s ease infinite;
+  border-radius: 12px;
+  transition: width 0.6s ease;
+  min-width: 0%;
+}
+
+@keyframes progress-glow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* --------------- Video preview --------------- */
+.video-preview {
+  margin: 12px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.video-preview video {
+  display: block;
+}
+
 @media (max-width: 640px) {
   .hero h1 {
     font-size: 1.8rem;

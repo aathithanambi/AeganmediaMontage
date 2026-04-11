@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
@@ -75,37 +76,65 @@ def _gemini_available() -> bool:
     return bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"))
 
 
-def _gemini_generate(prompt: str, max_tokens: int = 4096) -> str | None:
-    """Call Google Gemini and return the text response."""
+def _gemini_generate(prompt: str, max_tokens: int = 4096, retries: int = 3) -> str | None:
+    """Call Google Gemini with retry for rate limits. Returns text or None."""
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return None
 
-    url = GEMINI_ENDPOINT.format(model="gemini-2.0-flash") + f"?key={api_key}"
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": max_tokens,
-            "temperature": 0.7,
-        },
-    }
+    models = ["gemini-2.0-flash", "gemini-1.5-flash"]
 
-    try:
-        resp = requests.post(url, json=body, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        _log(f"Gemini API error: {e}")
-        return None
+    for model in models:
+        url = GEMINI_ENDPOINT.format(model=model) + f"?key={api_key}"
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": 0.7,
+            },
+        }
+
+        for attempt in range(retries):
+            try:
+                resp = requests.post(url, json=body, timeout=90)
+                if resp.status_code == 429:
+                    wait = min(2 ** (attempt + 1), 30)
+                    _log(f"Gemini rate-limited (429), retrying in {wait}s "
+                         f"(attempt {attempt+1}/{retries})")
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except requests.exceptions.HTTPError as e:
+                if "429" in str(e) and attempt < retries - 1:
+                    wait = min(2 ** (attempt + 1), 30)
+                    _log(f"Gemini rate-limited, retrying in {wait}s")
+                    time.sleep(wait)
+                    continue
+                _log(f"Gemini API error ({model}): {e}")
+                break
+            except Exception as e:
+                _log(f"Gemini API error ({model}): {e}")
+                break
+
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Text utilities
 # ---------------------------------------------------------------------------
 
+def _strip_urls(text: str) -> str:
+    """Remove URLs and 'Reference:' prefixes from text."""
+    text = re.sub(r'https?://\S+', '', text)
+    text = re.sub(r'(?i)reference\s*:\s*', '', text)
+    return text.strip()
+
+
 def _extract_keywords(text: str, max_words: int = 4) -> list[str]:
-    """Pull meaningful keywords from prompt text."""
+    """Pull meaningful keywords from prompt text (URLs stripped first)."""
+    text = _strip_urls(text)
     stop = {
         "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
         "have", "has", "had", "do", "does", "did", "will", "would", "shall",
@@ -123,7 +152,9 @@ def _extract_keywords(text: str, max_words: int = 4) -> list[str]:
         "us", "use", "very", "want", "way", "we", "well", "what", "when",
         "where", "which", "who", "why", "with", "work", "world", "year", "you",
         "your", "create", "video", "make", "please", "need", "want", "second",
-        "minute", "seconds", "minutes",
+        "minute", "seconds", "minutes", "same", "type", "based", "sharing",
+        "link", "wan", "tthe", "referance", "http", "https", "www", "com",
+        "youtube", "watch",
     }
     words = re.findall(r"[a-zA-Z]{3,}", text.lower())
     keywords = [w for w in words if w not in stop]
@@ -170,6 +201,7 @@ def step_download_reference(ref_url: str, project_dir: Path) -> str | None:
         "output_dir": str(out_dir),
         "format": "video",
         "max_resolution": "720p",
+        "max_duration_seconds": 1800,
     })
     if result.success and result.artifacts:
         _log(f"Reference downloaded: {result.artifacts[0]}")
@@ -407,7 +439,7 @@ Respond ONLY with the JSON array, no other text. Example format:
 def step_tts(text: str, output_path: Path) -> str | None:
     """Generate narration audio. Prefers high-quality cloud voices."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    tts_tools = ["google_tts", "elevenlabs_tts", "openai_tts", "piper_tts"]
+    tts_tools = ["elevenlabs_tts", "google_tts", "openai_tts", "piper_tts"]
     for name in tts_tools:
         tool = _get_tool(name)
         if tool is None:
@@ -419,6 +451,7 @@ def step_tts(text: str, output_path: Path) -> str | None:
             params["speaking_rate"] = 0.95
         elif name == "piper_tts":
             params["model"] = "en_US-lessac-medium"
+            params["download_dir"] = str(Path.home() / ".local" / "share" / "piper_models")
         result = tool.execute(params)
         if result.success and result.artifacts:
             _log(f"Narration generated: {result.artifacts[0]}")
@@ -440,7 +473,7 @@ def step_fetch_images(
     output_dir.mkdir(parents=True, exist_ok=True)
     images: list[str] = []
 
-    ai_tools = ["google_imagen", "flux_image", "openai_image", "grok_image"]
+    ai_tools = ["flux_image", "google_imagen", "openai_image", "grok_image"]
     ai_tool = None
     ai_tool_name = ""
     for name in ai_tools:
@@ -511,7 +544,7 @@ def step_fetch_music(
     moods = [s.get("mood", "") for s in scene_plan if s.get("mood")]
     mood_str = moods[0] if moods else "cinematic"
 
-    music_tools = ["pixabay_music", "freesound_music", "music_gen", "suno_music"]
+    music_tools = ["music_gen", "suno_music", "pixabay_music", "freesound_music"]
     for name in music_tools:
         tool = _get_tool(name)
         if tool is None:
@@ -625,20 +658,23 @@ def step_compose_slideshow(
 
             zoom_expr = f"{z_start}+({z_end}-{z_start})*(on/{dur_frames})"
 
+            upscale_w = W * 2
+            upscale_h = H * 2
             vf_parts = [
-                f"scale=-1:{H * 2}",
+                f"scale={upscale_w}:{upscale_h}:force_original_aspect_ratio=increase",
+                f"crop={upscale_w}:{upscale_h}",
                 f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
                 f":d={dur_frames}:s={W}x{H}:fps={FPS}",
                 "format=yuv420p",
             ]
 
             if sections and i < len(sections):
-                sub_text = _escape_drawtext(sections[i][:120])
+                sub_text = _escape_drawtext(sections[i][:100])
                 vf_parts.append(
                     f"drawtext=text='{sub_text}'"
-                    f":fontsize=36:fontcolor=white"
-                    f":borderw=3:bordercolor=black"
-                    f":x=(w-tw)/2:y=h-80"
+                    f":fontsize=32:fontcolor=white"
+                    f":borderw=2:bordercolor=black@0.8"
+                    f":x=(w-tw)/2:y=h-70"
                     f":enable='between(t,0.5,{seconds_per_image - 0.5})'"
                 )
 
@@ -649,13 +685,30 @@ def step_compose_slideshow(
                 "-loop", "1", "-i", img,
                 "-t", str(seconds_per_image),
                 "-vf", vf,
-                "-c:v", "libx264", "-crf", "18", "-preset", "slow",
+                "-c:v", "libx264", "-crf", "18", "-preset", "medium",
                 "-r", str(FPS), "-pix_fmt", "yuv420p",
                 seg,
             ]
             _log(f"Rendering scene {i+1}/{len(images)} (Ken Burns + subtitle)")
-            subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=True)
-            segments.append(seg)
+            try:
+                subprocess.run(cmd, capture_output=True, text=True, timeout=180, check=True)
+                segments.append(seg)
+            except subprocess.CalledProcessError as e:
+                _log(f"Ken Burns failed for scene {i+1}, trying simple scale: "
+                     f"{e.stderr[:150] if e.stderr else ''}")
+                simple_cmd = [
+                    "ffmpeg", "-y",
+                    "-loop", "1", "-i", img,
+                    "-t", str(seconds_per_image),
+                    "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                           f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+                    "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+                    "-r", str(FPS), "-pix_fmt", "yuv420p",
+                    seg,
+                ]
+                subprocess.run(simple_cmd, capture_output=True, text=True,
+                               timeout=120, check=True)
+                segments.append(seg)
 
         if len(segments) > 1:
             _log("Applying crossfade transitions")
@@ -668,7 +721,7 @@ def step_compose_slideshow(
                     "-i", str(prev), "-i", str(segments[i]),
                     "-filter_complex",
                     f"xfade=transition=fade:duration={FADE_DUR}:offset={offset:.2f},format=yuv420p",
-                    "-c:v", "libx264", "-crf", "18", "-preset", "slow",
+                    "-c:v", "libx264", "-crf", "18", "-preset", "medium",
                     str(xfade_out),
                 ]
                 try:
@@ -790,7 +843,7 @@ def step_compose_remotion(
     if music_path and Path(music_path).exists():
         composition_data["musicPath"] = str(Path(music_path).resolve())
 
-    props_file = output_path.parent / "remotion_props.json"
+    props_file = (output_path.parent / "remotion_props.json").resolve()
     props_file.write_text(json.dumps(composition_data, indent=2), encoding="utf-8")
 
     total_frames = sum(s.get("durationInFrames", 180) for s in composition_data["scenes"])
@@ -798,7 +851,7 @@ def step_compose_remotion(
     cmd = [
         "npx", "remotion", "render",
         "src/index.tsx", "Explainer",
-        str(output_path),
+        str(output_path.resolve()),
         "--props", str(props_file),
         "--frames", f"0-{total_frames - 1}",
     ]
@@ -849,8 +902,10 @@ def run_pipeline(prompt_file: str) -> None:
     pipeline_name = payload.get("pipeline", "animated-explainer")
     project_id = payload.get("projectId", "web-project")
     title = payload.get("title", project_id)
-    prompt = payload.get("prompt", "")
+    raw_prompt = payload.get("prompt", "")
     ref_url = payload.get("referenceUrl", "")
+
+    prompt = _strip_urls(raw_prompt)
 
     _log(f"Pipeline: {pipeline_name}")
     _log(f"Project:  {project_id}")

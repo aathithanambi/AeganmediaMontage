@@ -14,9 +14,9 @@
       {% if run.status == "completed" %}
         <span class="badge badge-ok badge-lg">Completed</span>
       {% elif run.status == "running" %}
-        <span class="badge badge-info badge-lg">Running</span>
+        <span class="badge badge-info badge-lg" id="status-badge">Running</span>
       {% elif run.status == "queued" %}
-        <span class="badge badge-lg">Queued</span>
+        <span class="badge badge-lg" id="status-badge">Queued</span>
       {% elif run.status == "failed" %}
         <span class="badge badge-danger badge-lg">Failed</span>
       {% else %}
@@ -26,13 +26,31 @@
   </div>
 </section>
 
-<!-- Download -->
+<!-- Progress bar (shown for running/queued) -->
+{% if run.status in ["running", "queued"] %}
+<section class="card" id="progress-section">
+  <h2>Progress</h2>
+  <div class="progress-bar-container">
+    <div class="progress-bar-fill" id="progress-fill" style="width: {{ run.get('progress', 0) }}%"></div>
+  </div>
+  <p class="muted" id="progress-text" style="margin-top:8px">{{ run.get('progress', 0) }}% — Processing your video...</p>
+</section>
+{% endif %}
+
+<!-- Video Preview + Download (shown when completed) -->
 {% if video_available %}
 <section class="card">
   <h2>Output Video</h2>
-  <p>Your video is ready for download. It will be automatically cleaned up after {{ "48" }} hours.</p>
-  <a href="/download/run/{{ run._id }}" class="btn btn-primary">Download Video</a>
-  <span class="muted" style="margin-left:12px">{{ run.outputVideoPath }}</span>
+  <div class="video-preview">
+    <video id="video-player" controls preload="metadata" style="width:100%;max-width:960px;border-radius:8px;background:#000">
+      <source src="/preview/run/{{ run._id }}" type="video/mp4">
+      Your browser does not support video playback.
+    </video>
+  </div>
+  <div style="margin-top:16px;display:flex;gap:12px;align-items:center">
+    <a href="/download/run/{{ run._id }}" class="btn btn-primary">Download Video</a>
+    <span class="muted">Auto-cleanup in 48 hours</span>
+  </div>
 </section>
 {% endif %}
 
@@ -91,5 +109,70 @@
 {% endif %}
 
 <a href="/dashboard" class="btn btn-secondary">&larr; Back to Dashboard</a>
+
+{% if run.status in ["running", "queued"] %}
+<script>
+(function() {
+  const runId = "{{ run._id }}";
+  const fill = document.getElementById("progress-fill");
+  const text = document.getElementById("progress-text");
+  const badge = document.getElementById("status-badge");
+  const section = document.getElementById("progress-section");
+
+  const labels = {
+    5: "Starting pipeline...",
+    10: "Discovering tools...",
+    15: "Downloading reference video...",
+    20: "Analyzing reference video...",
+    25: "Generating narration script (AI)...",
+    30: "Script ready, planning scenes...",
+    35: "Creating scene plan (AI)...",
+    40: "Scene plan ready...",
+    45: "Generating narration audio (TTS)...",
+    50: "Narration audio ready...",
+    55: "Generating scene images (AI)...",
+    60: "Fetching scene images...",
+    75: "Finding background music...",
+    78: "Background music ready...",
+    80: "Rendering video scenes...",
+    88: "Applying transitions...",
+    92: "Mixing audio tracks...",
+    95: "Finalizing video...",
+    100: "Video complete!"
+  };
+
+  function getLabel(pct) {
+    let best = "Processing...";
+    let bestKey = 0;
+    for (const [k, v] of Object.entries(labels)) {
+      if (parseInt(k) <= pct && parseInt(k) >= bestKey) {
+        best = v;
+        bestKey = parseInt(k);
+      }
+    }
+    return best;
+  }
+
+  function poll() {
+    fetch("/api/run/" + runId + "/progress")
+      .then(r => r.json())
+      .then(data => {
+        const pct = data.progress || 0;
+        if (fill) fill.style.width = pct + "%";
+        if (text) text.textContent = pct + "% \u2014 " + getLabel(pct);
+
+        if (data.status === "completed" || data.status === "failed") {
+          location.reload();
+          return;
+        }
+        setTimeout(poll, 3000);
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+
+  setTimeout(poll, 2000);
+})();
+</script>
+{% endif %}
 
 {% endblock %}

@@ -181,45 +181,113 @@ def _execute_run(run: dict) -> None:
 
     args = shlex.split(command)
     start_ts = time.monotonic()
-    proc = subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        timeout=settings.worker_timeout_seconds,
-        check=False,
+
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1,
     )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    import selectors
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
+    sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
+
+    progress_map = {
+        "Starting pipeline": 5,
+        "Tools discovered": 10,
+        "Downloading reference": 15,
+        "Reference analysis": 20,
+        "Generating script": 25,
+        "Script (": 30,
+        "Generating scene plan": 35,
+        "Scene plan:": 40,
+        "Generating narration": 45,
+        "Narration generated": 50,
+        "AI generating": 55,
+        "AI image generation": 55,
+        "stock search": 60,
+        "Scene 1/": 55, "Scene 2/": 58, "Scene 3/": 60,
+        "Scene 4/": 62, "Scene 5/": 65, "Scene 6/": 68,
+        "Scene 7/": 70, "Scene 8/": 72,
+        "Fetching background music": 75,
+        "Background music": 78,
+        "Rendering scene": 80,
+        "Rendering with Remotion": 80,
+        "Applying crossfade": 88,
+        "Mixing narration": 92,
+        "Video composed": 95,
+        "Pipeline completed": 100,
+    }
+    last_progress = 0
+    db = get_db()
+
+    try:
+        while True:
+            ready = sel.select(timeout=settings.worker_timeout_seconds)
+            if not ready:
+                proc.kill()
+                break
+            for key, _ in ready:
+                line = key.fileobj.readline()
+                if not line:
+                    sel.unregister(key.fileobj)
+                    continue
+                line = line.rstrip("\n")
+                if key.data == "stdout":
+                    stdout_lines.append(line)
+                    log.info("  stdout> %s", line)
+                    for marker, pct in progress_map.items():
+                        if marker in line and pct > last_progress:
+                            last_progress = pct
+                            db.pipeline_runs.update_one(
+                                {"_id": run["_id"]},
+                                {"$set": {"progress": pct, "updatedAt": datetime.now(UTC)}},
+                            )
+                            break
+                else:
+                    stderr_lines.append(line)
+            if proc.poll() is not None:
+                for line in proc.stdout:
+                    stdout_lines.append(line.rstrip("\n"))
+                for line in proc.stderr:
+                    stderr_lines.append(line.rstrip("\n"))
+                break
+    except Exception as sel_exc:
+        log.error("Stream reading error: %s", sel_exc)
+        proc.kill()
+    finally:
+        sel.close()
+
+    proc.wait(timeout=30)
     elapsed = round(time.monotonic() - start_ts, 1)
+    stdout = "\n".join(stdout_lines)
+    stderr = "\n".join(stderr_lines)
 
     log.info(
         "Command finished | exit=%d elapsed=%.1fs stdout=%d bytes stderr=%d bytes",
-        proc.returncode, elapsed, len(proc.stdout), len(proc.stderr),
+        proc.returncode, elapsed, len(stdout), len(stderr),
     )
-
-    if proc.stdout:
-        for line in proc.stdout.splitlines()[-30:]:
-            log.info("  stdout> %s", line)
-    if proc.stderr:
-        for line in proc.stderr.splitlines()[-20:]:
-            log.warning("  stderr> %s", line)
 
     if proc.returncode != 0:
         _mark_failed(
             run["_id"],
-            f"Pipeline command failed (exit={proc.returncode}). stderr={proc.stderr[-2000:]}",
+            f"Pipeline command failed (exit={proc.returncode}). stderr={stderr[-2000:]}",
         )
-        db = get_db()
         db.pipeline_runs.update_one(
             {"_id": run["_id"]},
             {
                 "$set": {
-                    "stdout": proc.stdout[-12000:],
-                    "stderr": proc.stderr[-12000:],
+                    "stdout": stdout[-12000:],
+                    "stderr": stderr[-12000:],
                     "updatedAt": datetime.now(UTC),
                 }
             },
         )
         return
-    _mark_completed(run, proc.stdout, proc.stderr)
+    _mark_completed(run, stdout, stderr)
 
 
 def run_forever() -> None:

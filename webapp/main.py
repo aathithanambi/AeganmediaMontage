@@ -443,8 +443,55 @@ def download_run_video(request: Request, run_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Run detail page
+# Run detail page + progress API + video preview
 # ---------------------------------------------------------------------------
+
+@app.get("/api/run/{run_id}/progress")
+def run_progress_api(request: Request, run_id: str):
+    """JSON endpoint for polling progress from the frontend."""
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one(
+        {"_id": ObjectId(run_id)},
+        {"status": 1, "progress": 1, "error": 1, "outputVideoPath": 1},
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    video_ready = False
+    if run.get("outputVideoPath"):
+        safe = _safe_video_path(run["outputVideoPath"])
+        video_ready = safe is not None and safe.exists()
+
+    return JSONResponse({
+        "status": run.get("status", "unknown"),
+        "progress": run.get("progress", 0),
+        "error": run.get("error"),
+        "videoReady": video_ready,
+    })
+
+
+@app.get("/preview/run/{run_id}")
+def preview_run_video(request: Request, run_id: str):
+    """Serve video for in-browser preview (same auth as download)."""
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one({"_id": ObjectId(run_id)})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not run.get("outputVideoPath"):
+        raise HTTPException(status_code=404, detail="No output video")
+
+    safe_path = _safe_video_path(run["outputVideoPath"])
+    if not safe_path or not safe_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    return FileResponse(path=str(safe_path), media_type="video/mp4")
+
 
 @app.get("/dashboard/run/{run_id}")
 def run_detail(request: Request, run_id: str):
