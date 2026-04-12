@@ -17,12 +17,15 @@ def _ensure_indexes() -> None:
     db.password_reset_requests.create_index([("requestedAt", DESCENDING)])
     db.pipeline_runs.create_index([("createdAt", DESCENDING)])
     db.pipeline_runs.create_index([("status", ASCENDING), ("createdAt", ASCENDING)])
+    db.api_usage.create_index([("createdAt", DESCENDING)])
+    db.api_usage.create_index([("requestedBy", ASCENDING)])
 
 
 def _seed_user(email: str, password: str, role: str, name: str = "") -> None:
     db = get_db()
     if db.users.find_one({"email": email}):
         return
+    is_privileged = role in ("admin", "manager")
     db.users.insert_one(
         {
             "name": name or role.capitalize(),
@@ -31,6 +34,7 @@ def _seed_user(email: str, password: str, role: str, name: str = "") -> None:
             "role": role,
             "credits": 0,
             "isActive": True,
+            "isApproved": is_privileged,
             "createdAt": datetime.now(UTC),
             "updatedAt": datetime.now(UTC),
         }

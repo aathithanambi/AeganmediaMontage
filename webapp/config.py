@@ -34,6 +34,8 @@ class Settings:
     seed_user_password: str = os.getenv("SEED_USER_PASSWORD", "User@2026")
 
     credit_cost_per_run: int = int(os.getenv("CREDIT_COST_PER_RUN", "1"))
+    free_tier_max_runs: int = int(os.getenv("FREE_TIER_MAX_RUNS", "1"))
+    free_tier_max_duration: int = int(os.getenv("FREE_TIER_MAX_DURATION", "10"))
 
     worker_poll_seconds: int = int(os.getenv("WORKER_POLL_SECONDS", "5"))
     worker_timeout_seconds: int = int(os.getenv("WORKER_TIMEOUT_SECONDS", "10800"))

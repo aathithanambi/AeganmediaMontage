@@ -1,135 +1,91 @@
-
-name: Deploy AeganMediaMontage
+name: Deploy AeganMedia Montage
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - development
-      - feature/development
+    branches: [main, feature/development]
+  workflow_dispatch:
 
 jobs:
   deploy:
-    name: Build and Deploy Container
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     environment: development
-    env:
-      IMAGE_NAME: aeganmediamontage-web
-      IMAGE_TAG: ${{ github.run_number }}
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate required GitHub secrets
-        env:
-          HOST: ${{ secrets.HOST }}
-          USERNAME: ${{ secrets.USERNAME }}
-          PASSWORD: ${{ secrets.PASSWORD }}
-          PORT: ${{ secrets.PORT }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          MONGODB_DB: ${{ secrets.MONGODB_DB }}
-          INIT_DB_ON_BOOT: ${{ secrets.INIT_DB_ON_BOOT }}
-          SEED_ADMIN_EMAIL: ${{ secrets.SEED_ADMIN_EMAIL }}
-          SEED_ADMIN_PASSWORD: ${{ secrets.SEED_ADMIN_PASSWORD }}
-          SEED_MANAGER_EMAIL: ${{ secrets.SEED_MANAGER_EMAIL }}
-          SEED_MANAGER_PASSWORD: ${{ secrets.SEED_MANAGER_PASSWORD }}
-          SEED_USER_EMAIL: ${{ secrets.SEED_USER_EMAIL }}
-          SEED_USER_PASSWORD: ${{ secrets.SEED_USER_PASSWORD }}
+      - name: Validate secrets
         run: |
-          missing=0
-          for key in HOST USERNAME PASSWORD PORT JWT_SECRET MONGODB_URI MONGODB_DB INIT_DB_ON_BOOT SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD SEED_MANAGER_EMAIL SEED_MANAGER_PASSWORD SEED_USER_EMAIL SEED_USER_PASSWORD; do
-            val="$(printenv "$key" || true)"
-            if [ -z "$val" ]; then
-              echo "Missing GitHub secret: $key"
-              missing=1
-            fi
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "Secrets are not available to this workflow."
-            echo "If you stored them under Environment secrets, assign that environment to this job."
-            echo "Also note: secrets are not exposed to workflows from forks."
+          missing=""
+          [ -z "${{ secrets.HOST }}" ] && missing="$missing HOST"
+          [ -z "${{ secrets.USERNAME }}" ] && missing="$missing USERNAME"
+          [ -z "${{ secrets.SSH_KEY }}" ] && missing="$missing SSH_KEY"
+          [ -z "${{ secrets.MONGODB_URI }}" ] && missing="$missing MONGODB_URI"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets:$missing"
             exit 1
           fi
 
-      - name: Build image
-        run: docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile .
+      - name: Build Docker image
+        run: docker build -t aeganmediamontage-web:latest .
 
-      - name: Export image tar
-        run: |
-          docker save -o ${IMAGE_NAME}-${IMAGE_TAG}.tar ${IMAGE_NAME}:${IMAGE_TAG}
-          chmod 644 ${IMAGE_NAME}-${IMAGE_TAG}.tar
+      - name: Save Docker image
+        run: docker save aeganmediamontage-web:latest -o aeganmediamontage-web.tar
 
-      - name: Verify tar is readable
-        run: |
-          ls -l ${IMAGE_NAME}-${IMAGE_TAG}.tar
-          test -r ${IMAGE_NAME}-${IMAGE_TAG}.tar
-
-      - name: Prepare remote upload directory
-        uses: appleboy/ssh-action@v0.1.10
+      - name: Prepare remote directories
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT || 22 }}
           script: |
-            set -e
-            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
-            chmod 700 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+            chmod 777 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
 
-      - name: Copy image and scripts to server
+      - name: Copy image to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
-          source: "${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar,docker/pre-deploy.sh"
-          target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/"
-          overwrite: true
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT || 22 }}
+          source: "aeganmediamontage-web.tar"
+          target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
           tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
-          debug: true
 
-      - name: Stop and remove old containers and images
-        uses: appleboy/ssh-action@v0.1.10
+      - name: Copy deployment scripts
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
-          script: |
-            set -e
-            chmod +x /home/${{ secrets.USERNAME }}/aeganmediamontage/docker/pre-deploy.sh
-            /home/${{ secrets.USERNAME }}/aeganmediamontage/docker/pre-deploy.sh
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT || 22 }}
+          source: "docker/"
+          target: "/home/${{ secrets.USERNAME }}/aeganmediamontage"
 
       - name: Deploy on server
-        uses: appleboy/ssh-action@v0.1.10
+        uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.PORT || 22 }}
           script: |
             set -e
-            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage
-            mkdir -p /var/aeganmediamontage/videos
-            mkdir -p /var/aeganmediamontage/projects
-            mkdir -p /var/aeganmediamontage/logs
+            cd /home/${{ secrets.USERNAME }}/aeganmediamontage
 
-            cat > /var/aeganmediamontage/.env <<'ENVEOF'
+            # Write .env
+            cat <<'ENVEOF' > /var/aeganmediamontage/.env
             APP_NAME=AeganMediaMontage
             HOST=0.0.0.0
             PORT=41006
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             JWT_EXP_MINUTES=1440
             MONGODB_URI=${{ secrets.MONGODB_URI }}
-            MONGODB_DB=${{ secrets.MONGODB_DB }}
+            MONGODB_DB=aeganmediamontage
             VIDEOS_ROOT=/var/aeganmediamontage/videos
             VIDEO_RETENTION_HOURS=48
-            INIT_DB_ON_BOOT=${{ secrets.INIT_DB_ON_BOOT }}
+            INIT_DB_ON_BOOT=false
             INIT_SEED_USERS=true
             SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}
             SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}
@@ -137,79 +93,57 @@ jobs:
             SEED_MANAGER_PASSWORD=${{ secrets.SEED_MANAGER_PASSWORD }}
             SEED_USER_EMAIL=${{ secrets.SEED_USER_EMAIL }}
             SEED_USER_PASSWORD=${{ secrets.SEED_USER_PASSWORD }}
+            CREDIT_COST_PER_RUN=1
+            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             PIPELINE_RUN_COMMAND=python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}
             WORKER_POLL_SECONDS=5
             WORKER_TIMEOUT_SECONDS=10800
-            CREDIT_COST_PER_RUN=${{ secrets.CREDIT_COST_PER_RUN || '1' }}
-            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             ENVEOF
 
-            chmod 600 /var/aeganmediamontage/.env
-            if grep -nE "^JWT_SECRET=$|^MONGODB_URI=$|^SEED_ADMIN_PASSWORD=$|^SEED_MANAGER_PASSWORD=$" /var/aeganmediamontage/.env; then
-              echo "Required secrets are missing in generated .env"
-              exit 1
-            fi
+            # Pre-deploy cleanup
+            chmod +x docker/pre-deploy.sh
+            bash docker/pre-deploy.sh
 
-            docker load -i /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
+            # Load new image
+            docker load -i tmp/aeganmediamontage-web.tar
+            rm -f tmp/aeganmediamontage-web.tar
 
+            # Create shared directories
+            mkdir -p /var/aeganmediamontage/videos
+            mkdir -p /var/aeganmediamontage/projects
+
+            # Run web app
             docker run -d \
               --name aeganmediamontage-web \
               --restart unless-stopped \
-              --user "$(id -u):$(id -g)" \
-              --read-only \
-              --cap-drop ALL \
-              --security-opt no-new-privileges \
-              --pids-limit 200 \
-              --memory="1g" \
-              --cpus="1.0" \
-              --tmpfs /tmp:size=128M,mode=1777 \
-              --tmpfs /var/tmp:size=64M,mode=1777 \
               --env-file /var/aeganmediamontage/.env \
+              -p 41006:41006 \
               -v /var/aeganmediamontage/videos:/var/aeganmediamontage/videos \
               -v /var/aeganmediamontage/projects:/app/projects \
+              --security-opt no-new-privileges \
+              --cap-drop ALL \
+              --tmpfs /tmp:rw,noexec,nosuid,size=512m \
               --log-driver json-file \
-              --log-opt max-size=20m \
-              --log-opt max-file=5 \
-              -p 127.0.0.1:51004:41006 \
-              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
+              aeganmediamontage-web:latest
 
+            # Run worker
             docker run -d \
               --name aeganmediamontage-worker \
               --restart unless-stopped \
-              --user "$(id -u):$(id -g)" \
-              --cap-drop ALL \
-              --security-opt no-new-privileges \
-              --pids-limit 300 \
-              --memory="2g" \
-              --cpus="2.0" \
-              --tmpfs /tmp:size=512M,mode=1777 \
-              --tmpfs /home/appuser:size=256M,uid=$(id -u),gid=$(id -g),mode=0700 \
               --env-file /var/aeganmediamontage/.env \
               -e REMOTION_CACHE_DIR=/tmp/remotion-cache \
               -v /var/aeganmediamontage/videos:/var/aeganmediamontage/videos \
               -v /var/aeganmediamontage/projects:/app/projects \
+              --security-opt no-new-privileges \
+              --cap-drop ALL \
+              --tmpfs /tmp:rw,noexec,nosuid,size=512m \
               --log-driver json-file \
-              --log-opt max-size=20m \
-              --log-opt max-file=5 \
-              --entrypoint python \
-              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -m webapp.worker
+              --log-opt max-size=10m \
+              --log-opt max-file=3 \
+              aeganmediamontage-web:latest \
+              python -m webapp.worker
 
-            docker logs --tail 200 aeganmediamontage-web > /var/aeganmediamontage/logs/web-startup.log || true
-            docker logs --tail 200 aeganmediamontage-worker > /var/aeganmediamontage/logs/worker-startup.log || true
-
-            for i in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:51004/health >/dev/null; then
-                echo "Health check passed."
-                break
-              fi
-              if [ "$i" -eq 30 ]; then
-                echo "Health check failed after retries."
-                docker logs --tail 300 aeganmediamontage-web || true
-                docker logs --tail 300 aeganmediamontage-worker || true
-                exit 1
-              fi
-              sleep 2
-            done
-
-            rm -f /home/${{ secrets.USERNAME }}/aeganmediamontage/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
-
+            echo "Deployment complete"
+            docker ps --filter "name=aeganmediamontage"

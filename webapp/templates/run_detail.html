@@ -33,7 +33,10 @@
   <div class="progress-bar-container">
     <div class="progress-bar-fill" id="progress-fill" style="width: {{ run.get('progress', 0) }}%"></div>
   </div>
-  <p class="muted" id="progress-text" style="margin-top:8px">{{ run.get('progress', 0) }}% — Processing your video...</p>
+  <div style="display:flex;justify-content:space-between;margin-top:8px">
+    <p class="muted" id="progress-text">{{ run.get('progress', 0) }}% — Processing your video...</p>
+    <p class="muted" id="eta-text"></p>
+  </div>
 </section>
 {% endif %}
 
@@ -128,26 +131,32 @@
   const text = document.getElementById("progress-text");
   const badge = document.getElementById("status-badge");
   const section = document.getElementById("progress-section");
+  const etaText = document.getElementById("eta-text");
 
   const labels = {
     5: "Starting pipeline...",
     10: "Discovering tools...",
-    15: "Downloading reference video...",
-    20: "Analyzing reference video...",
-    25: "Generating narration script (AI)...",
-    30: "Script ready, planning scenes...",
-    35: "Creating scene plan (AI)...",
-    40: "Scene plan ready...",
-    45: "Generating narration audio (TTS)...",
-    50: "Narration audio ready...",
-    55: "Generating scene images (AI)...",
-    60: "Fetching scene images...",
-    75: "Finding background music...",
-    78: "Background music ready...",
-    80: "Rendering video scenes...",
-    88: "Applying transitions...",
-    92: "Mixing audio tracks...",
-    95: "Finalizing video...",
+    12: "Downloading reference video...",
+    15: "Analyzing reference video...",
+    17: "Analyzing visual style...",
+    20: "Parsing production intent...",
+    25: "Transcribing audio with timestamps...",
+    30: "Transcription complete...",
+    35: "Generating narration script...",
+    38: "Script ready...",
+    40: "Extracting characters & scenes...",
+    44: "Generating scene plan...",
+    48: "Scene plan ready...",
+    50: "Translating subtitles...",
+    54: "Generating narration audio (TTS)...",
+    56: "Narration ready...",
+    58: "Generating AI images (Imagen)...",
+    60: "Creating scene visuals...",
+    75: "Scene images ready...",
+    88: "Rendering video with Ken Burns...",
+    92: "Applying transitions...",
+    95: "Composing final video...",
+    97: "Running verification...",
     100: "Video complete!"
   };
 
@@ -170,6 +179,18 @@
         const pct = data.progress || 0;
         if (fill) fill.style.width = pct + "%";
         if (text) text.textContent = pct + "% \u2014 " + getLabel(pct);
+
+        if (etaText) {
+          const elapsed = data.elapsedSeconds || 0;
+          const eta = data.eta || "";
+          let parts = [];
+          if (elapsed > 0) {
+            if (elapsed > 60) parts.push(Math.floor(elapsed/60) + "m " + Math.floor(elapsed%60) + "s elapsed");
+            else parts.push(Math.floor(elapsed) + "s elapsed");
+          }
+          if (eta) parts.push(eta);
+          etaText.textContent = parts.join(" \u2022 ");
+        }
 
         if (data.status === "completed" || data.status === "failed") {
           location.reload();

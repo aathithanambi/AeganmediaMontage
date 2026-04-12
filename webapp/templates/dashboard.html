@@ -8,10 +8,17 @@
     <p>
       Role: <b>{{ current_user.role | capitalize }}</b>
       {% if current_user.role in ["admin", "manager"] %}
-        &nbsp;&middot;&nbsp; Credits: <span class="badge badge-ok">Unlimited</span>
-      {% else %}
+        &nbsp;&middot;&nbsp; <span class="badge badge-ok">Unlimited Access</span>
+      {% elif not current_user.get("isApproved", False) %}
+        &nbsp;&middot;&nbsp; <span class="badge badge-danger">Pending Approval</span>
+      {% elif current_user.get("credits", 0) > 0 %}
         &nbsp;&middot;&nbsp; Credits: <b>{{ current_user.credits }}</b>
         <span class="muted">({{ credit_cost }} per project)</span>
+        &nbsp;&middot;&nbsp; <span class="badge badge-info">Paid Tier</span>
+      {% else %}
+        &nbsp;&middot;&nbsp; Credits: <b>0</b>
+        <span class="muted">(Free tier)</span>
+        &nbsp;&middot;&nbsp; <span class="badge">Free Tier</span>
       {% endif %}
     </p>
   </div>
@@ -20,9 +27,15 @@
 <!-- Create Project -->
 <section class="card">
   <h2>Create Project</h2>
-  {% if current_user.role not in ["admin", "manager"] and current_user.credits < credit_cost %}
+  {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}
+    <div class="alert alert-warn" style="background:rgba(220,53,69,0.08);border-color:rgba(220,53,69,0.3)">
+      <b>Account Pending Approval</b> &mdash; An admin must approve your account before you can create videos.
+      Please wait for approval or contact the administrator.
+    </div>
+  {% elif current_user.role not in ["admin", "manager"] and current_user.get("credits", 0) <= 0 %}
     <div class="alert alert-warn">
-      You need at least <b>{{ credit_cost }}</b> credit(s) to create a project. Contact an admin or manager to get credits.
+      You are on the <b>Free Tier</b> ({{ settings.free_tier_max_runs if settings else 1 }} video, max {{ settings.free_tier_max_duration if settings else 10 }}s).
+      Contact an admin or manager to get credits for more videos.
     </div>
   {% endif %}
   <form method="post" action="/dashboard/create-project" enctype="multipart/form-data" class="create-form">
@@ -35,7 +48,7 @@
             {% if p.name != "framework-smoke" and p.name != "avatar-spokesperson" %}
             <option value="{{ p.name }}"
               {% if p.name == "animated-explainer" %}selected{% endif %}
-            >{{ p.name | replace("-", " ") | title }}{% if p.stability == "beta" %} (Beta){% endif %}{% if p.get("hint") %} — {{ p.hint }}{% endif %}</option>
+            >{{ p.name | replace("-", " ") | title }}{% if p.stability == "beta" %} (Beta){% endif %}</option>
             {% endif %}
           {% endfor %}
         </select>
@@ -68,6 +81,8 @@
           <option value="bengali">Bengali (বাংলা)</option>
           <option value="marathi">Marathi (मराठी)</option>
           <option value="gujarati">Gujarati (ગુજરાતી)</option>
+          <option value="punjabi">Punjabi (ਪੰਜਾਬੀ)</option>
+          <option value="urdu">Urdu (اردو)</option>
           <option value="spanish">Spanish (Español)</option>
           <option value="french">French (Français)</option>
           <option value="german">German (Deutsch)</option>
@@ -78,13 +93,29 @@
         </select>
       </div>
       <div class="form-group">
-        <label for="subtitle_language">Subtitle Language <span class="muted">(optional)</span></label>
+        <label for="enable_subtitles">Enable Subtitles</label>
+        <select name="enable_subtitles" id="enable_subtitles">
+          <option value="no" selected>No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row" id="subtitle-options" style="display:none">
+      <div class="form-group">
+        <label for="subtitle_language">Subtitle Language</label>
         <select name="subtitle_language" id="subtitle_language">
-          <option value="">Same as audio (no translation)</option>
+          <option value="">Same as audio</option>
           <option value="english">English</option>
           <option value="tamil">Tamil (தமிழ்)</option>
           <option value="hindi">Hindi (हिन्दी)</option>
           <option value="telugu">Telugu (తెలుగు)</option>
+          <option value="kannada">Kannada (ಕನ್ನಡ)</option>
+          <option value="malayalam">Malayalam (മലയാളം)</option>
+          <option value="bengali">Bengali (বাংলা)</option>
+          <option value="marathi">Marathi (मराठी)</option>
+          <option value="gujarati">Gujarati (ગુજરાતી)</option>
+          <option value="punjabi">Punjabi (ਪੰਜਾਬੀ)</option>
+          <option value="urdu">Urdu (اردو)</option>
           <option value="spanish">Spanish (Español)</option>
           <option value="french">French (Français)</option>
           <option value="german">German (Deutsch)</option>
@@ -94,17 +125,29 @@
           <option value="portuguese">Portuguese (Português)</option>
         </select>
       </div>
+      <div class="form-group">
+        <label for="enable_music">Background Music</label>
+        <select name="enable_music" id="enable_music">
+          <option value="no" selected>No</option>
+          <option value="yes">Yes (coming soon)</option>
+        </select>
+      </div>
     </div>
     <div class="form-group">
       <label for="audio_file">Custom Audio / Voiceover <span class="muted">(optional &mdash; MP3, WAV, M4A, up to 50 MB)</span></label>
       <input type="file" name="audio_file" id="audio_file" accept=".mp3,.wav,.m4a,.ogg,.aac,.flac" />
       <p class="muted" style="font-size:0.82rem;margin-top:4px">
-        Upload your own narration or audio track. If provided, the pipeline will use this audio instead of AI-generated narration and create visuals to match it.
+        Upload your own narration or audio track. The pipeline will transcribe it sentence-by-sentence, extract characters and scenes, and create visuals that match your audio word-by-word.
       </p>
     </div>
     <button type="submit" class="btn btn-primary"
-      {% if current_user.role not in ["admin", "manager"] and current_user.credits < credit_cost %}disabled{% endif %}>
-      Create Project
+      {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}disabled title="Account pending admin approval"
+      {% elif current_user.role not in ["admin", "manager"] and current_user.get("credits", 0) <= 0 %}{% endif %}>
+      {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}
+        Pending Approval
+      {% else %}
+        Create Project
+      {% endif %}
       {% if current_user.role not in ["admin", "manager"] %}({{ credit_cost }} credit){% endif %}
     </button>
   </form>
@@ -237,9 +280,9 @@
 <script>
 (function(){
   var hints = {
-    "animated-explainer": "✅ Recommended — Google AI creates script, images (Imagen), narration (Cloud TTS) & composes video from your prompt.",
-    "cinematic": "Dramatic/mood-led videos — trailers, brand films, montages. Best with a reference video URL for style matching.",
-    "animation": "Motion graphics & animated explainers — diagrams, kinetic typography, math visuals. Powered by Google Gemini + Imagen.",
+    "animated-explainer": "Google AI creates script, images (Imagen), narration (Cloud TTS) & composes video. Best for educational & explainer content.",
+    "cinematic": "Dramatic/mood-led videos — trailers, brand films, montages. Provide a reference video for style matching.",
+    "animation": "Motion graphics & animated explainers — diagrams, kinetic typography. Powered by Google Gemini + Imagen.",
     "hybrid": "Combines your own footage with AI-generated support visuals, overlays & graphics.",
     "screen-demo": "Polishes raw screen recordings with callouts, zoom crops & subtitles. Upload a screen capture.",
     "talking-head": "Requires raw footage of a person speaking as input.",
@@ -253,6 +296,16 @@
   function update(){ hint.textContent = hints[sel.value] || ""; }
   sel.addEventListener("change", update);
   update();
+
+  var subToggle = document.getElementById("enable_subtitles");
+  var subOptions = document.getElementById("subtitle-options");
+  if(subToggle && subOptions){
+    function toggleSubOpts(){
+      subOptions.style.display = subToggle.value === "yes" ? "" : "none";
+    }
+    subToggle.addEventListener("change", toggleSubOpts);
+    toggleSubOpts();
+  }
 })();
 </script>
 {% endblock %}

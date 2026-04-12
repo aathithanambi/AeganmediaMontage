@@ -127,6 +127,9 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
         "createdAt": run.get("createdAt"),
         "startedAt": run.get("startedAt"),
         "completedAt": run.get("completedAt"),
+        "elapsedSeconds": run.get("elapsedSeconds"),
+        "apiUsage": run.get("apiUsage"),
+        "requestedBy": run.get("requestedBy"),
     }
 
 
@@ -209,6 +212,7 @@ def signup(
         "role": "user",
         "credits": 0,
         "isActive": True,
+        "isApproved": False,
         "createdAt": datetime.now(UTC),
         "updatedAt": datetime.now(UTC),
     }
@@ -296,7 +300,7 @@ def dashboard(request: Request):
     ]
     return templates.TemplateResponse(
         request, "dashboard.html",
-        _template_context(request, jobs=jobs, runs=runs, pipelines=_PIPELINE_CATALOG),
+        _template_context(request, jobs=jobs, runs=runs, pipelines=_PIPELINE_CATALOG, settings=settings),
     )
 
 
@@ -313,6 +317,8 @@ async def create_project_from_form(
     reference_url: str = Form(""),
     audio_language: str = Form(""),
     subtitle_language: str = Form(""),
+    enable_subtitles: str = Form("no"),
+    enable_music: str = Form("no"),
     audio_file: UploadFile | None = File(None),
 ):
     """Form-based project creation with optional audio upload."""
@@ -322,20 +328,36 @@ async def create_project_from_form(
     if not pipeline_file.exists():
         raise HTTPException(status_code=400, detail=f"Unknown pipeline: {pipeline_name}")
 
+    db = get_db()
     if not _is_privileged(user):
-        cost = settings.credit_cost_per_run
-        if user.get("credits", 0) < cost:
+        if not user.get("isApproved", False):
             raise HTTPException(
                 status_code=403,
-                detail=f"Insufficient credits. You need {cost} credit(s) but have {user.get('credits', 0)}.",
+                detail="Your account is pending approval. An admin must approve your account before you can create videos.",
             )
-        db = get_db()
-        db.users.update_one(
-            {"_id": user["_id"], "credits": {"$gte": cost}},
-            {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
-        )
-    else:
-        db = get_db()
+
+        credits = user.get("credits", 0)
+        if credits <= 0:
+            existing_runs = db.pipeline_runs.count_documents({"requestedBy": str(user["_id"])})
+            if existing_runs >= settings.free_tier_max_runs:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Free tier limit reached ({settings.free_tier_max_runs} video). "
+                        f"Contact admin/manager to get credits for more videos."
+                    ),
+                )
+        else:
+            cost = settings.credit_cost_per_run
+            if credits < cost:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient credits. You need {cost} credit(s) but have {credits}.",
+                )
+            db.users.update_one(
+                {"_id": user["_id"], "credits": {"$gte": cost}},
+                {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
+            )
 
     full_prompt = prompt
     if reference_url.strip():
@@ -371,10 +393,12 @@ async def create_project_from_form(
         "referenceUrl": reference_url.strip() or None,
         "audioLanguage": audio_language.strip() or None,
         "subtitleLanguage": subtitle_language.strip() or None,
+        "enableSubtitles": enable_subtitles.strip().lower() == "yes",
+        "enableMusic": enable_music.strip().lower() == "yes",
         "uploadedAudioPath": uploaded_audio_path,
         "status": "queued",
         "requestedBy": str(user["_id"]),
-        "creditsCharged": 0 if _is_privileged(user) else settings.credit_cost_per_run,
+        "creditsCharged": 0 if (_is_privileged(user) or user.get("credits", 0) <= 0) else settings.credit_cost_per_run,
         "createdAt": now,
         "updatedAt": now,
         "startedAt": None,
@@ -483,7 +507,8 @@ def run_progress_api(request: Request, run_id: str):
     db = get_db()
     run = db.pipeline_runs.find_one(
         {"_id": ObjectId(run_id)},
-        {"status": 1, "progress": 1, "error": 1, "outputVideoPath": 1},
+        {"status": 1, "progress": 1, "error": 1, "outputVideoPath": 1,
+         "requestedBy": 1, "elapsedSeconds": 1, "etaString": 1},
     )
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -500,6 +525,8 @@ def run_progress_api(request: Request, run_id: str):
         "progress": run.get("progress", 0),
         "error": run.get("error"),
         "videoReady": video_ready,
+        "elapsedSeconds": run.get("elapsedSeconds", 0),
+        "eta": run.get("etaString", ""),
     })
 
 
@@ -549,6 +576,90 @@ def run_detail(request: Request, run_id: str):
 # Admin dashboard
 # ---------------------------------------------------------------------------
 
+def _get_usage_stats(db) -> dict[str, Any]:
+    """Aggregate API usage stats for admin dashboard."""
+    now = datetime.now(UTC)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    def _agg(match_filter: dict) -> dict:
+        pipeline = [
+            {"$match": match_filter},
+            {"$group": {
+                "_id": None,
+                "total_gemini": {"$sum": "$gemini_calls"},
+                "total_imagen": {"$sum": "$imagen_calls"},
+                "total_tts": {"$sum": "$tts_calls"},
+                "total_tts_chars": {"$sum": "$tts_characters"},
+                "total_cost": {"$sum": "$estimated_cost_usd"},
+                "run_count": {"$sum": 1},
+            }},
+        ]
+        results = list(db.api_usage.aggregate(pipeline))
+        if results:
+            r = results[0]
+            return {
+                "gemini_calls": r.get("total_gemini", 0),
+                "imagen_calls": r.get("total_imagen", 0),
+                "tts_calls": r.get("total_tts", 0),
+                "tts_characters": r.get("total_tts_chars", 0),
+                "estimated_cost": round(r.get("total_cost", 0), 4),
+                "run_count": r.get("run_count", 0),
+            }
+        return {"gemini_calls": 0, "imagen_calls": 0, "tts_calls": 0,
+                "tts_characters": 0, "estimated_cost": 0, "run_count": 0}
+
+    return {
+        "today": _agg({"createdAt": {"$gte": today_start}}),
+        "month": _agg({"createdAt": {"$gte": month_start}}),
+        "all_time": _agg({}),
+    }
+
+
+def _get_per_user_usage(db) -> list[dict[str, Any]]:
+    """Get API usage breakdown per user."""
+    pipeline = [
+        {"$group": {
+            "_id": "$requestedBy",
+            "total_gemini": {"$sum": "$gemini_calls"},
+            "total_imagen": {"$sum": "$imagen_calls"},
+            "total_tts": {"$sum": "$tts_calls"},
+            "total_tts_chars": {"$sum": "$tts_characters"},
+            "total_cost": {"$sum": "$estimated_cost_usd"},
+            "run_count": {"$sum": 1},
+            "last_used": {"$max": "$createdAt"},
+        }},
+        {"$sort": {"total_cost": -1}},
+    ]
+    results = list(db.api_usage.aggregate(pipeline))
+
+    user_ids = [ObjectId(r["_id"]) for r in results if r["_id"]]
+    users_map = {}
+    if user_ids:
+        for u in db.users.find({"_id": {"$in": user_ids}}, {"email": 1, "name": 1, "role": 1, "credits": 1}):
+            users_map[str(u["_id"])] = u
+
+    enriched = []
+    for r in results:
+        uid = r["_id"]
+        user_info = users_map.get(uid, {})
+        enriched.append({
+            "user_id": uid,
+            "email": user_info.get("email", "unknown"),
+            "name": user_info.get("name", ""),
+            "role": user_info.get("role", "user"),
+            "credits": user_info.get("credits", 0),
+            "gemini_calls": r.get("total_gemini", 0),
+            "imagen_calls": r.get("total_imagen", 0),
+            "tts_calls": r.get("total_tts", 0),
+            "tts_characters": r.get("total_tts_chars", 0),
+            "estimated_cost": round(r.get("total_cost", 0), 4),
+            "run_count": r.get("run_count", 0),
+            "last_used": r.get("last_used"),
+        })
+    return enriched
+
+
 @app.get("/admin-dashboard")
 def admin_dashboard(request: Request):
     user = _require_user(request)
@@ -559,12 +670,16 @@ def admin_dashboard(request: Request):
     all_runs = [_public_run(r) for r in db.pipeline_runs.find().sort("createdAt", -1).limit(200)]
     api_keys = get_api_key_status()
     api_summary = get_api_summary()
+    usage_stats = _get_usage_stats(db)
+    per_user_usage = _get_per_user_usage(db)
     return templates.TemplateResponse(
         request,
         "admin_dashboard.html",
         _template_context(
             request, users=users, reset_requests=reset_requests,
             all_runs=all_runs, api_keys=api_keys, api_summary=api_summary,
+            usage_stats=usage_stats, per_user_usage=per_user_usage,
+            settings=settings,
         ),
     )
 
@@ -577,6 +692,30 @@ def update_user_role(request: Request, user_id: str, role: str = Form(...)):
         raise HTTPException(status_code=400, detail="Invalid role")
     db = get_db()
     db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"role": role, "updatedAt": datetime.now(UTC)}})
+    return RedirectResponse("/admin-dashboard", status_code=303)
+
+
+@app.post("/admin/users/{user_id}/approve")
+def approve_user(request: Request, user_id: str):
+    actor = _require_user(request)
+    _require_role(actor, {"admin"})
+    db = get_db()
+    db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"isApproved": True, "updatedAt": datetime.now(UTC)}},
+    )
+    return RedirectResponse("/admin-dashboard", status_code=303)
+
+
+@app.post("/admin/users/{user_id}/reject")
+def reject_user(request: Request, user_id: str):
+    actor = _require_user(request)
+    _require_role(actor, {"admin"})
+    db = get_db()
+    db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"isApproved": False, "updatedAt": datetime.now(UTC)}},
+    )
     return RedirectResponse("/admin-dashboard", status_code=303)
 
 
@@ -677,20 +816,32 @@ def enqueue_pipeline_run(
     if not pipeline_file.exists():
         raise HTTPException(status_code=400, detail=f"Unknown pipeline: {pipeline_name}")
 
+    db = get_db()
     if not _is_privileged(actor):
-        cost = settings.credit_cost_per_run
-        if actor.get("credits", 0) < cost:
+        if not actor.get("isApproved", False):
             raise HTTPException(
                 status_code=403,
-                detail=f"Insufficient credits ({actor.get('credits', 0)}/{cost}).",
+                detail="Account pending admin approval.",
             )
-        db = get_db()
-        db.users.update_one(
-            {"_id": actor["_id"], "credits": {"$gte": cost}},
-            {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
-        )
-    else:
-        db = get_db()
+        credits = actor.get("credits", 0)
+        if credits <= 0:
+            existing_runs = db.pipeline_runs.count_documents({"requestedBy": str(actor["_id"])})
+            if existing_runs >= settings.free_tier_max_runs:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Free tier limit reached ({settings.free_tier_max_runs} video).",
+                )
+        else:
+            cost = settings.credit_cost_per_run
+            if credits < cost:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Insufficient credits ({credits}/{cost}).",
+                )
+            db.users.update_one(
+                {"_id": actor["_id"], "credits": {"$gte": cost}},
+                {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
+            )
 
     full_prompt = prompt
     if reference_url.strip():

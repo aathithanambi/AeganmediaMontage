@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shlex
 import shutil
 import subprocess
@@ -82,7 +83,44 @@ def _copy_to_videos_root(source_path: str, project_id: str) -> str | None:
         return source_path
 
 
-def _mark_completed(run: dict, stdout: str, stderr: str) -> None:
+def _extract_api_usage(stdout: str) -> dict:
+    """Extract API_USAGE JSON from pipeline stdout."""
+    for line in stdout.splitlines():
+        if "API_USAGE=" in line:
+            try:
+                json_str = line.split("API_USAGE=", 1)[1].strip()
+                return json.loads(json_str)
+            except (json.JSONDecodeError, IndexError):
+                pass
+    return {}
+
+
+def _store_api_usage(run: dict, usage: dict) -> None:
+    """Store per-run API usage in the api_usage collection."""
+    if not usage:
+        return
+    db = get_db()
+    now = datetime.now(UTC)
+    db.api_usage.insert_one({
+        "runId": run["_id"],
+        "projectId": run["projectId"],
+        "pipelineName": run.get("pipelineName"),
+        "requestedBy": run.get("requestedBy"),
+        "gemini_calls": usage.get("gemini_calls", 0),
+        "imagen_calls": usage.get("imagen_calls", 0),
+        "tts_calls": usage.get("tts_calls", 0),
+        "tts_characters": usage.get("tts_characters", 0),
+        "estimated_cost_usd": usage.get("estimated_cost_usd", 0.0),
+        "createdAt": now,
+    })
+    log.info(
+        "API usage recorded: gemini=%d imagen=%d tts=%d cost=$%.4f",
+        usage.get("gemini_calls", 0), usage.get("imagen_calls", 0),
+        usage.get("tts_calls", 0), usage.get("estimated_cost_usd", 0.0),
+    )
+
+
+def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float = 0) -> None:
     db = get_db()
     now = datetime.now(UTC)
     raw_video_path = _resolve_output_path(run, stdout)
@@ -92,9 +130,13 @@ def _mark_completed(run: dict, stdout: str, stderr: str) -> None:
         if copied:
             video_path = copied
     log.info(
-        "Run %s COMPLETED | video=%s",
-        run["_id"], video_path or "(none)",
+        "Run %s COMPLETED | video=%s | elapsed=%.0fs",
+        run["_id"], video_path or "(none)", elapsed_seconds,
     )
+
+    api_usage = _extract_api_usage(stdout)
+    _store_api_usage(run, api_usage)
+
     db.pipeline_runs.update_one(
         {"_id": run["_id"]},
         {
@@ -105,6 +147,8 @@ def _mark_completed(run: dict, stdout: str, stderr: str) -> None:
                 "completedAt": now,
                 "updatedAt": now,
                 "outputVideoPath": video_path,
+                "elapsedSeconds": round(elapsed_seconds, 1),
+                "apiUsage": api_usage,
             }
         },
     )
@@ -158,6 +202,8 @@ def _execute_run(run: dict) -> None:
                 "uploadedAudioPath": run.get("uploadedAudioPath"),
                 "audioLanguage": run.get("audioLanguage"),
                 "subtitleLanguage": run.get("subtitleLanguage"),
+                "enableSubtitles": run.get("enableSubtitles", False),
+                "enableMusic": run.get("enableMusic", False),
                 "requestedBy": run.get("requestedBy"),
             },
             ensure_ascii=True,
@@ -202,34 +248,64 @@ def _execute_run(run: dict) -> None:
         "Starting pipeline": 5,
         "Google API": 8,
         "Tools discovered": 10,
-        "Downloading reference": 15,
-        "Reference analysis": 18,
+        "Downloading reference": 12,
+        "Analyzing reference": 15,
+        "Analyzing reference visual style": 17,
+        "Reference style:": 18,
         "Parsing production intent": 20,
-        "Intent parsed": 25,
-        "Content prompt": 26,
+        "Intent parsed": 22,
+        "Extracting sentence-level timestamps": 25,
+        "Sentence-level timestamps": 28,
         "Transcribing audio": 28,
-        "Transcription complete": 32,
-        "Audio transcript": 33,
+        "Transcription complete": 30,
+        "Audio transcript": 32,
         "Generating": 35,
+        "Script generated": 37,
         "Script (": 38,
-        "Generating scene plan": 40,
-        "Scene plan:": 45,
-        "Translating subtitles": 48,
-        "Subtitles translated": 50,
-        "Google Cloud TTS": 52,
-        "Narration generated": 55,
+        "Extracting characters": 40,
+        "Extracted:": 42,
+        "Generating scene plan": 44,
+        "Scene plan batch": 45,
+        "Batched scene plan": 47,
+        "Scene plan:": 48,
+        "Translating subtitles": 50,
+        "Subtitles translated": 52,
+        "Long text detected": 53,
+        "TTS chunks concatenated": 55,
+        "Google Cloud TTS": 54,
+        "Narration generated": 56,
         "Generating images via Google Imagen": 58,
         "generating image via Imagen": 60,
-        "Scene 1/": 60, "Scene 2/": 63, "Scene 3/": 66,
-        "Scene 4/": 69, "Scene 5/": 72, "Scene 6/": 75,
-        "Scene 7/": 78, "Scene 8/": 80,
-        "Rendering scene": 82,
-        "Applying crossfade": 90,
+        "Image generation complete": 86,
+        "Rendering scene": 88,
+        "Applying crossfade": 92,
         "Video composed": 95,
+        "Running post-creation verification": 97,
+        "Verification PASSED": 98,
+        "Pipeline completed in": 99,
         "Pipeline completed": 100,
     }
     last_progress = 0
     db = get_db()
+
+    def _update_progress(pct: int, elapsed: float) -> None:
+        eta_str = ""
+        if pct > 5 and pct < 100:
+            estimated_total = elapsed / (pct / 100.0)
+            eta_remaining = max(0, estimated_total - elapsed)
+            if eta_remaining > 60:
+                eta_str = f"{eta_remaining/60:.0f}m remaining"
+            else:
+                eta_str = f"{eta_remaining:.0f}s remaining"
+        db.pipeline_runs.update_one(
+            {"_id": run["_id"]},
+            {"$set": {
+                "progress": pct,
+                "elapsedSeconds": round(elapsed, 1),
+                "etaString": eta_str,
+                "updatedAt": datetime.now(UTC),
+            }},
+        )
 
     try:
         while True:
@@ -246,13 +322,21 @@ def _execute_run(run: dict) -> None:
                 if key.data == "stdout":
                     stdout_lines.append(line)
                     log.info("  stdout> %s", line)
+                    elapsed = time.monotonic() - start_ts
+
+                    img_match = re.search(r"Scene (\d+)/(\d+).*Imagen", line)
+                    if img_match:
+                        cur, tot = int(img_match.group(1)), int(img_match.group(2))
+                        img_pct = 58 + int((cur / tot) * 28)
+                        if img_pct > last_progress:
+                            last_progress = img_pct
+                            _update_progress(img_pct, elapsed)
+                            continue
+
                     for marker, pct in progress_map.items():
                         if marker in line and pct > last_progress:
                             last_progress = pct
-                            db.pipeline_runs.update_one(
-                                {"_id": run["_id"]},
-                                {"$set": {"progress": pct, "updatedAt": datetime.now(UTC)}},
-                            )
+                            _update_progress(pct, elapsed)
                             break
                 else:
                     stderr_lines.append(line)
@@ -279,6 +363,8 @@ def _execute_run(run: dict) -> None:
     )
 
     if proc.returncode != 0:
+        api_usage = _extract_api_usage(stdout)
+        _store_api_usage(run, api_usage)
         _mark_failed(
             run["_id"],
             f"Pipeline command failed (exit={proc.returncode}). stderr={stderr[-2000:]}",
@@ -289,12 +375,14 @@ def _execute_run(run: dict) -> None:
                 "$set": {
                     "stdout": stdout[-12000:],
                     "stderr": stderr[-12000:],
+                    "elapsedSeconds": elapsed,
+                    "apiUsage": api_usage,
                     "updatedAt": datetime.now(UTC),
                 }
             },
         )
         return
-    _mark_completed(run, stdout, stderr)
+    _mark_completed(run, stdout, stderr, elapsed_seconds=elapsed)
 
 
 def run_forever() -> None:

@@ -4,7 +4,7 @@
 <!-- Hero -->
 <section class="hero">
   <h1>AeganMedia<span class="accent">Montage</span></h1>
-  <p class="hero-sub">Turn ideas into production videos with AI. Describe what you want &mdash; our pipelines handle research, scripting, asset generation, editing, and final composition.</p>
+  <p class="hero-sub">AI-powered video production platform. Upload your audio, provide a reference video, and let Google AI create stunning videos with matching visuals, narration, and subtitles.</p>
   <div class="hero-actions">
     {% if current_user %}
       <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
@@ -21,54 +21,54 @@
   <div class="steps-grid">
     <div class="step">
       <div class="step-num">1</div>
-      <h3>Describe</h3>
-      <p>Write a prompt or paste a reference video URL. Tell us what you want to create.</p>
+      <h3>Describe or Upload</h3>
+      <p>Write a prompt, paste a reference video URL, or upload your own audio narration.</p>
     </div>
     <div class="step">
       <div class="step-num">2</div>
-      <h3>AI Researches</h3>
-      <p>The agent researches your topic across the web, gathers data, and proposes concepts.</p>
+      <h3>AI Analyzes</h3>
+      <p>Gemini transcribes your audio, extracts characters and scenes, and analyzes the reference video style.</p>
     </div>
     <div class="step">
       <div class="step-num">3</div>
-      <h3>Assets Generated</h3>
-      <p>Images, video clips, narration, music, and subtitles are generated automatically.</p>
+      <h3>Images Generated</h3>
+      <p>Google Imagen creates character-consistent visuals matched to each sentence of your audio.</p>
     </div>
     <div class="step">
       <div class="step-num">4</div>
-      <h3>Final Video</h3>
-      <p>Everything is composed into a polished, production-grade video ready to publish.</p>
+      <h3>Video Composed</h3>
+      <p>FFmpeg assembles scenes with Ken Burns motion, smooth transitions, and audio-synced timing.</p>
     </div>
   </div>
 </section>
 
 <!-- Capabilities -->
 <section class="card">
-  <h2>What You Can Create</h2>
+  <h2>Powered by Google AI</h2>
   <div class="cap-grid">
     <div class="cap-card">
-      <h3>Video Generation</h3>
-      <p>12 providers including Kling, Runway Gen-4, Google Veo 3, and local GPU options. AI-generated clips from text or image prompts.</p>
+      <h3>Gemini AI</h3>
+      <p>Script generation, scene planning, audio transcription with timestamps, character extraction, intent parsing, subtitle translation, and post-creation verification.</p>
     </div>
     <div class="cap-card">
-      <h3>Image Generation</h3>
-      <p>9 tools &mdash; FLUX, Google Imagen, DALL-E 3, Recraft, Grok, and free stock sources. Any visual style you need.</p>
+      <h3>Google Imagen</h3>
+      <p>AI image generation with character-consistent visuals. Each scene gets a detailed prompt with matching art style, characters, and locations.</p>
     </div>
     <div class="cap-card">
-      <h3>Voice &amp; Narration</h3>
-      <p>4 TTS providers: ElevenLabs, Google TTS (700+ voices), OpenAI, and free offline Piper. Professional narration in 50+ languages.</p>
+      <h3>Google Cloud TTS</h3>
+      <p>Professional narration in 30+ languages including Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, and more Indian languages.</p>
     </div>
     <div class="cap-card">
-      <h3>Music &amp; Sound</h3>
-      <p>Suno AI for full songs, ElevenLabs for music and sound effects. Royalty-free library support included.</p>
+      <h3>Reference Video Matching</h3>
+      <p>Paste a YouTube URL and the AI analyzes its art style, editing approach, color palette, and mood to create similar content.</p>
     </div>
     <div class="cap-card">
-      <h3>Avatar &amp; Lip Sync</h3>
-      <p>SadTalker, MuseTalk, and Wav2Lip for talking-head videos. Turn a photo into a speaking presenter.</p>
+      <h3>Audio-Synced Timing</h3>
+      <p>Sentence-level timestamps ensure each image appears exactly when its corresponding audio plays. Frame-by-frame precision.</p>
     </div>
     <div class="cap-card">
-      <h3>Post-Production</h3>
-      <p>FFmpeg + Remotion composition engine. Transitions, captions, color grading, subtitle burn-in, and audio mixing &mdash; all automated.</p>
+      <h3>Multi-Language Subtitles</h3>
+      <p>Optional subtitles in any language. Gemini translates narration to your chosen subtitle language with natural phrasing.</p>
     </div>
   </div>
 </section>
@@ -101,51 +101,51 @@
   <h2>Try These Prompts</h2>
   <div class="prompt-grid">
     <div class="prompt-card">
-      <span class="prompt-tag">Zero Keys</span>
-      <p>"Make a 45-second animated explainer about why the sky is blue"</p>
+      <span class="prompt-tag">Audio Upload</span>
+      <p>"Upload a Tamil story audio and a YouTube reference video. The AI creates matching visuals frame-by-frame."</p>
     </div>
     <div class="prompt-card">
       <span class="prompt-tag">Reference Video</span>
       <p>"Here's a YouTube Short I love. Make me something like this, but about quantum computing."</p>
     </div>
     <div class="prompt-card">
-      <span class="prompt-tag">Animation</span>
-      <p>"Create a 30-second Ghibli-style animated video of a magical floating library in the clouds"</p>
+      <span class="prompt-tag">Explainer</span>
+      <p>"Make a 60-second animated explainer about how neural networks learn, with English subtitles."</p>
     </div>
     <div class="prompt-card">
       <span class="prompt-tag">Cinematic</span>
-      <p>"Create a cinematic 30-second trailer: humanity receives a warning from 1000 years in the future"</p>
-    </div>
-    <div class="prompt-card">
-      <span class="prompt-tag">Product</span>
-      <p>"Make a product launch teaser for a fictional smart water bottle called AquaPulse"</p>
+      <p>"Create a cinematic 30-second trailer: humanity receives a warning from 1000 years in the future."</p>
     </div>
     <div class="prompt-card">
       <span class="prompt-tag">Education</span>
-      <p>"Create a 60-second video about the history of the internet, with narration and captions"</p>
+      <p>"Create a 60-second video about the history of the internet, with Hindi narration and English subtitles."</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Story</span>
+      <p>"Upload a children's story audio. The AI identifies characters, creates consistent character images, and builds the video."</p>
     </div>
   </div>
 </section>
 
-<!-- Providers Overview -->
+<!-- Tech Stack -->
 <section class="card">
-  <h2>Supported Providers</h2>
+  <h2>Technology Stack</h2>
   <div class="providers-row">
     <div>
-      <h3>Video (12)</h3>
-      <p class="muted">Kling, Runway Gen-4, Google Veo 3, Grok, MiniMax, HeyGen, WAN 2.1, Hunyuan, CogVideo, LTX-Video, Pexels, Pixabay</p>
+      <h3>AI Engine</h3>
+      <p class="muted">Google Gemini 2.0 Flash — script, scenes, transcription, character analysis, verification</p>
     </div>
     <div>
-      <h3>Image (9)</h3>
-      <p class="muted">FLUX, Google Imagen, Grok, DALL-E 3, Recraft, Local Diffusion, Pexels, Pixabay, ManimCE</p>
+      <h3>Image Generation</h3>
+      <p class="muted">Google Imagen 3.0 — character-consistent AI images in any art style</p>
     </div>
     <div>
-      <h3>Voice (4)</h3>
-      <p class="muted">ElevenLabs, Google TTS, OpenAI TTS, Piper (free)</p>
+      <h3>Voice</h3>
+      <p class="muted">Google Cloud TTS — 30+ languages, 700+ voices, Studio quality</p>
     </div>
     <div>
-      <h3>Music (3)</h3>
-      <p class="muted">Suno AI, ElevenLabs Music, ElevenLabs SFX</p>
+      <h3>Composition</h3>
+      <p class="muted">FFmpeg — Ken Burns motion, crossfade transitions, audio mixing, subtitle burn-in</p>
     </div>
   </div>
 </section>
@@ -154,7 +154,7 @@
 {% if not current_user %}
 <section class="hero cta-section">
   <h2>Ready to Create?</h2>
-  <p>Sign up and start producing professional videos with AI.</p>
+  <p>Sign up and start producing professional videos with Google AI.</p>
   <a href="/signup" class="btn btn-primary">Get Started Free</a>
 </section>
 {% endif %}

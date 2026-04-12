@@ -106,6 +106,82 @@
   </p>
 </section>
 
+<!-- Google API Usage & Cost -->
+<section class="card">
+  <h2>Google API Usage &amp; Costs</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:20px">
+    {% for period, label in [("today", "Today"), ("month", "This Month"), ("all_time", "All Time")] %}
+    <div style="background:var(--surface,#f8f9fa);border-radius:8px;padding:16px;border:1px solid var(--border,#e0e0e0)">
+      <h3 style="margin:0 0 12px 0;font-size:1rem;color:var(--text-secondary,#666)">{{ label }}</h3>
+      {% set stats = usage_stats[period] %}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.9rem">
+        <div><span class="muted">Runs:</span> <b>{{ stats.run_count }}</b></div>
+        <div><span class="muted">Cost:</span> <b>${{ "%.4f"|format(stats.estimated_cost) }}</b></div>
+        <div><span class="muted">Gemini:</span> {{ stats.gemini_calls }} calls</div>
+        <div><span class="muted">Imagen:</span> {{ stats.imagen_calls }} images</div>
+        <div><span class="muted">TTS:</span> {{ stats.tts_calls }} calls</div>
+        <div><span class="muted">TTS chars:</span> {{ "{:,}".format(stats.tts_characters) }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="muted" style="font-size:0.85rem">
+    Cost estimates are approximate based on Google Cloud pricing (Gemini ~$0.0001/call, Imagen ~$0.04/image, TTS ~$16/1M chars).
+  </p>
+</section>
+
+<!-- Per-User API Usage -->
+<section class="card">
+  <h2>Per-User API Usage</h2>
+  {% if per_user_usage %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Role</th>
+          <th>Credits</th>
+          <th>Runs</th>
+          <th>Gemini</th>
+          <th>Imagen</th>
+          <th>TTS</th>
+          <th>Est. Cost</th>
+          <th>Last Used</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in per_user_usage %}
+        <tr>
+          <td>
+            <div>{{ u.name or u.email.split('@')[0] }}</div>
+            <div class="muted" style="font-size:0.8rem">{{ u.email }}</div>
+          </td>
+          <td>
+            {% if u.role == "admin" %}
+              <span class="badge badge-ok">admin</span>
+            {% elif u.role == "manager" %}
+              <span class="badge badge-info">manager</span>
+            {% else %}
+              <span class="badge">user</span>
+            {% endif %}
+          </td>
+          <td>{{ u.credits }}</td>
+          <td>{{ u.run_count }}</td>
+          <td>{{ u.gemini_calls }}</td>
+          <td>{{ u.imagen_calls }}</td>
+          <td>{{ u.tts_calls }}</td>
+          <td>${{ "%.4f"|format(u.estimated_cost) }}</td>
+          <td>{{ u.last_used.strftime('%Y-%m-%d %H:%M') if u.last_used else '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No API usage data yet. Usage is tracked per pipeline run.</p>
+  {% endif %}
+</section>
+
 <!-- All Pipeline Runs -->
 <section class="card">
   <h2>All Pipeline Runs</h2>
@@ -116,8 +192,10 @@
         <tr>
           <th>Pipeline</th>
           <th>Title</th>
-          <th>Requested By</th>
+          <th>Project</th>
           <th>Status</th>
+          <th>Duration</th>
+          <th>API Cost</th>
           <th>Created</th>
           <th>Output</th>
         </tr>
@@ -139,6 +217,24 @@
               <span class="badge badge-danger">Failed</span>
             {% else %}
               <span class="badge">{{ run.status }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if run.elapsedSeconds %}
+              {% if run.elapsedSeconds > 60 %}
+                {{ (run.elapsedSeconds / 60)|round(1) }}m
+              {% else %}
+                {{ run.elapsedSeconds|round(0)|int }}s
+              {% endif %}
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td>
+            {% if run.apiUsage %}
+              ${{ "%.4f"|format(run.apiUsage.get("estimated_cost_usd", 0)) }}
+            {% else %}
+              -
             {% endif %}
           </td>
           <td>{{ run.createdAt.strftime('%Y-%m-%d %H:%M') if run.createdAt else '-' }}</td>
@@ -205,7 +301,12 @@
 
 <!-- Users -->
 <section class="card">
-  <h2>Users</h2>
+  <h2>Users &amp; Credit Management</h2>
+  <p class="muted" style="margin-bottom:12px;font-size:0.85rem">
+    New users must be <b>approved by admin</b> before they can create any videos.
+    After approval, free tier allows {{ settings.free_tier_max_runs if settings else 1 }} video (max {{ settings.free_tier_max_duration if settings else 10 }}s).
+    Assign credits to unlock unlimited paid access. Admin &amp; Manager have unlimited access.
+  </p>
   <div class="table-wrap">
     <table>
       <thead>
@@ -213,7 +314,10 @@
           <th>Name</th>
           <th>Email</th>
           <th>Role</th>
+          <th>Status</th>
           <th>Credits</th>
+          <th>Tier</th>
+          <th>Approve</th>
           <th>Role Update</th>
           <th>Credits Update</th>
           <th>Delete</th>
@@ -221,11 +325,56 @@
       </thead>
       <tbody>
         {% for user in users %}
-        <tr>
+        <tr{% if not user.get("isApproved", False) and user.role == "user" %} style="background:rgba(255,193,7,0.07)"{% endif %}>
           <td>{{ user.get("name", "-") }}</td>
           <td>{{ user.email }}</td>
-          <td>{{ user.role }}</td>
-          <td>{{ user.credits }}</td>
+          <td>
+            {% if user.role == "admin" %}
+              <span class="badge badge-ok">admin</span>
+            {% elif user.role == "manager" %}
+              <span class="badge badge-info">manager</span>
+            {% else %}
+              <span class="badge">user</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if user.role in ["admin", "manager"] %}
+              <span class="badge badge-ok">Auto</span>
+            {% elif user.get("isApproved", False) %}
+              <span class="badge badge-ok">Approved</span>
+            {% else %}
+              <span class="badge badge-danger">Pending</span>
+            {% endif %}
+          </td>
+          <td>{{ user.get("credits", 0) }}</td>
+          <td>
+            {% if user.role in ["admin", "manager"] %}
+              <span class="badge badge-ok">Unlimited</span>
+            {% elif not user.get("isApproved", False) %}
+              <span class="badge badge-danger">Blocked</span>
+            {% elif user.get("credits", 0) > 0 %}
+              <span class="badge badge-info">Paid</span>
+            {% else %}
+              <span class="badge">Free</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if current_user.role == "admin" and user.role == "user" %}
+              {% if not user.get("isApproved", False) %}
+                <form method="post" action="/admin/users/{{ user._id }}/approve" class="inline-form">
+                  <button type="submit" class="btn btn-sm btn-primary">Approve</button>
+                </form>
+              {% else %}
+                <form method="post" action="/admin/users/{{ user._id }}/reject" class="inline-form">
+                  <button type="submit" class="btn btn-sm btn-secondary">Revoke</button>
+                </form>
+              {% endif %}
+            {% elif user.role in ["admin", "manager"] %}
+              <span class="muted">N/A</span>
+            {% else %}
+              <span class="muted">Admin only</span>
+            {% endif %}
+          </td>
           <td>
             {% if current_user.role == "admin" %}
             <form method="post" action="/admin/users/{{ user._id }}/role" class="inline-form">
@@ -242,7 +391,7 @@
           </td>
           <td>
             <form method="post" action="/admin/users/{{ user._id }}/credits" class="inline-form">
-              <input type="number" name="credits" value="{{ user.credits }}" min="0" style="width:80px" />
+              <input type="number" name="credits" value="{{ user.get('credits', 0) }}" min="0" style="width:80px" />
               <button type="submit">Update</button>
             </form>
           </td>
