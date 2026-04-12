@@ -18,7 +18,7 @@ jobs:
           missing=""
           [ -z "${{ secrets.HOST }}" ] && missing="$missing HOST"
           [ -z "${{ secrets.USERNAME }}" ] && missing="$missing USERNAME"
-          [ -z "${{ secrets.SSH_KEY }}" ] && missing="$missing SSH_KEY"
+          [ -z "${{ secrets.PASSWORD }}" ] && missing="$missing PASSWORD"
           [ -z "${{ secrets.MONGODB_URI }}" ] && missing="$missing MONGODB_URI"
           if [ -n "$missing" ]; then
             echo "::error::Missing required secrets:$missing"
@@ -36,8 +36,8 @@ jobs:
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.PORT || 22 }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
           script: |
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
             chmod 777 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
@@ -47,8 +47,8 @@ jobs:
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.PORT || 22 }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
           source: "aeganmediamontage-web.tar"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
           tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
@@ -58,8 +58,8 @@ jobs:
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.PORT || 22 }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
           source: "docker/"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage"
 
@@ -68,8 +68,9 @@ jobs:
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.PORT || 22 }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 30m
           script: |
             set -e
             cd /home/${{ secrets.USERNAME }}/aeganmediamontage
@@ -94,6 +95,8 @@ jobs:
             SEED_USER_EMAIL=${{ secrets.SEED_USER_EMAIL }}
             SEED_USER_PASSWORD=${{ secrets.SEED_USER_PASSWORD }}
             CREDIT_COST_PER_RUN=1
+            FREE_TIER_MAX_RUNS=1
+            FREE_TIER_MAX_DURATION=10
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             PIPELINE_RUN_COMMAND=python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}
             WORKER_POLL_SECONDS=5
@@ -133,7 +136,6 @@ jobs:
               --name aeganmediamontage-worker \
               --restart unless-stopped \
               --env-file /var/aeganmediamontage/.env \
-              -e REMOTION_CACHE_DIR=/tmp/remotion-cache \
               -v /var/aeganmediamontage/videos:/var/aeganmediamontage/videos \
               -v /var/aeganmediamontage/projects:/app/projects \
               --security-opt no-new-privileges \
