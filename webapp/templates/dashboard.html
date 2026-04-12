@@ -32,7 +32,7 @@
         <select name="pipeline_name" id="pipeline_name" required>
           <option value="">Select a pipeline...</option>
           {% for p in pipelines %}
-            {% if p.name != "framework-smoke" %}
+            {% if p.name != "framework-smoke" and p.name != "avatar-spokesperson" %}
             <option value="{{ p.name }}"
               {% if p.name == "animated-explainer" %}selected{% endif %}
             >{{ p.name | replace("-", " ") | title }}{% if p.stability == "beta" %} (Beta){% endif %}{% if p.get("hint") %} — {{ p.hint }}{% endif %}</option>
@@ -237,16 +237,15 @@
 <script>
 (function(){
   var hints = {
-    "animated-explainer": "✅ Recommended — Create any video from a text prompt + optional reference. AI generates script, images, narration & music.",
-    "cinematic": "Dramatic/mood-led videos — trailers, brand films, montages. Best with a reference video for style matching.",
-    "animation": "Motion graphics & animated explainers — diagrams, kinetic typography, math visuals.",
-    "avatar-spokesperson": "AI avatar presenter reads your script. Requires HeyGen API key.",
+    "animated-explainer": "✅ Recommended — Google AI creates script, images (Imagen), narration (Cloud TTS) & composes video from your prompt.",
+    "cinematic": "Dramatic/mood-led videos — trailers, brand films, montages. Best with a reference video URL for style matching.",
+    "animation": "Motion graphics & animated explainers — diagrams, kinetic typography, math visuals. Powered by Google Gemini + Imagen.",
     "hybrid": "Combines your own footage with AI-generated support visuals, overlays & graphics.",
     "screen-demo": "Polishes raw screen recordings with callouts, zoom crops & subtitles. Upload a screen capture.",
-    "talking-head": "⚠️ Requires raw footage of a person speaking as input.",
-    "clip-factory": "⚠️ Beta — Cuts long-form content (webinar, stream) into social-ready short clips.",
-    "localization-dub": "⚠️ Beta — Translates & dubs an existing video into other languages.",
-    "podcast-repurpose": "⚠️ Beta — Converts podcast audio into visual content & social clips.",
+    "talking-head": "Requires raw footage of a person speaking as input.",
+    "clip-factory": "Beta — Cuts long-form content (webinar, stream) into social-ready short clips.",
+    "localization-dub": "Beta — Translates & dubs an existing video into other languages.",
+    "podcast-repurpose": "Beta — Converts podcast audio into visual content & social clips.",
   };
   var sel = document.getElementById("pipeline_name");
   var hint = document.getElementById("pipeline-hint");

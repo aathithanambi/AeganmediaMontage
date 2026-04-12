@@ -141,18 +141,7 @@ jobs:
             WORKER_POLL_SECONDS=5
             WORKER_TIMEOUT_SECONDS=10800
             CREDIT_COST_PER_RUN=${{ secrets.CREDIT_COST_PER_RUN || '1' }}
-            PEXELS_API_KEY=${{ secrets.PEXELS_API_KEY }}
-            PIXABAY_API_KEY=${{ secrets.PIXABAY_API_KEY }}
-            FAL_KEY=${{ secrets.FAL_KEY }}
-            ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}
-            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-            XAI_API_KEY=${{ secrets.XAI_API_KEY }}
-            HEYGEN_API_KEY=${{ secrets.HEYGEN_API_KEY }}
-            SUNO_API_KEY=${{ secrets.SUNO_API_KEY }}
-            RUNWAY_API_KEY=${{ secrets.RUNWAY_API_KEY }}
-            HF_TOKEN=${{ secrets.HF_TOKEN }}
-            FREESOUND_API_KEY=${{ secrets.FREESOUND_API_KEY }}
             ENVEOF
 
             chmod 600 /var/aeganmediamontage/.env

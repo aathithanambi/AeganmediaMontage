@@ -1,7 +1,6 @@
-"""API key status checker for admin dashboard.
+"""Google AI API key status checker for admin dashboard.
 
-Checks which API keys are configured, their availability,
-and fetches credit/usage info where provider APIs support it.
+Only GOOGLE_API_KEY is needed — it powers Gemini, Imagen, and Cloud TTS.
 """
 
 from __future__ import annotations
@@ -16,111 +15,21 @@ API_KEY_REGISTRY: list[dict[str, Any]] = [
     {
         "env": "GOOGLE_API_KEY",
         "name": "Google AI",
-        "category": "LLM / TTS / Images",
+        "category": "LLM / TTS / Images / Transcription",
         "tier": "free",
-        "tools": ["Gemini LLM (script writing)", "Google TTS", "Google Imagen"],
+        "tools": [
+            "Gemini LLM (script writing, scene planning, intent parsing)",
+            "Gemini Audio Transcription (multimodal)",
+            "Google Imagen (AI image generation)",
+            "Google Cloud TTS (50+ languages, 700+ voices)",
+            "Subtitle Translation (Gemini)",
+        ],
         "url": "https://aistudio.google.com/apikey",
-        "balance_check": None,
-    },
-    {
-        "env": "ELEVENLABS_API_KEY",
-        "name": "ElevenLabs",
-        "category": "TTS / Music / SFX",
-        "tier": "free_tier",
-        "tools": ["ElevenLabs TTS (best voice)", "Music Gen", "Sound Effects"],
-        "url": "https://elevenlabs.io/",
-        "balance_check": "elevenlabs",
-    },
-    {
-        "env": "FAL_KEY",
-        "name": "fal.ai",
-        "category": "Images / Video",
-        "tier": "free_tier",
-        "tools": ["FLUX Images (best quality)", "Kling Video", "Veo Video",
-                  "MiniMax Video", "Recraft Images"],
-        "url": "https://fal.ai/dashboard/keys",
-        "balance_check": None,
-    },
-    {
-        "env": "PEXELS_API_KEY",
-        "name": "Pexels",
-        "category": "Stock Media",
-        "tier": "free",
-        "tools": ["Stock Photos", "Stock Video"],
-        "url": "https://www.pexels.com/api/",
-        "balance_check": None,
-    },
-    {
-        "env": "PIXABAY_API_KEY",
-        "name": "Pixabay",
-        "category": "Stock Media",
-        "tier": "free",
-        "tools": ["Stock Photos", "Stock Video", "Stock Music"],
-        "url": "https://pixabay.com/api/docs/",
-        "balance_check": None,
-    },
-    {
-        "env": "FREESOUND_API_KEY",
-        "name": "Freesound",
-        "category": "Music / SFX",
-        "tier": "free",
-        "tools": ["Background Music Search", "Sound Effects Search"],
-        "url": "https://freesound.org/apiv2/apply",
-        "balance_check": None,
-    },
-    {
-        "env": "OPENAI_API_KEY",
-        "name": "OpenAI",
-        "category": "TTS / Images",
-        "tier": "paid",
-        "tools": ["OpenAI TTS", "DALL-E Image Gen"],
-        "url": "https://platform.openai.com/api-keys",
-        "balance_check": None,
-    },
-    {
-        "env": "XAI_API_KEY",
-        "name": "xAI / Grok",
-        "category": "Images / Video",
-        "tier": "free_tier",
-        "tools": ["Grok Image Gen/Edit", "Grok Video Gen"],
-        "url": "https://console.x.ai/",
-        "balance_check": None,
-    },
-    {
-        "env": "HEYGEN_API_KEY",
-        "name": "HeyGen",
-        "category": "Avatar Video",
-        "tier": "paid",
-        "tools": ["Avatar Videos", "Video Translation", "Face Swap"],
-        "url": "https://app.heygen.com/settings/api",
-        "balance_check": "heygen",
-    },
-    {
-        "env": "RUNWAY_API_KEY",
-        "name": "Runway",
-        "category": "Video Generation",
-        "tier": "paid",
-        "tools": ["Runway Gen-4 Video"],
-        "url": "https://app.runwayml.com/settings/api-keys",
-        "balance_check": None,
-    },
-    {
-        "env": "SUNO_API_KEY",
-        "name": "Suno",
-        "category": "Music Generation",
-        "tier": "paid",
-        "tools": ["Suno AI Music (full songs)"],
-        "url": "https://sunoapi.org/api-key",
-        "balance_check": None,
-    },
-    {
-        "env": "HF_TOKEN",
-        "name": "HuggingFace",
-        "category": "Analysis",
-        "tier": "free",
-        "tools": ["Speaker Diarization (WhisperX)"],
-        "url": "https://huggingface.co/settings/tokens",
-        "balance_check": None,
+        "balance_check": "google",
+        "apis_required": [
+            "Generative Language API (Gemini)",
+            "Cloud Text-to-Speech API",
+        ],
     },
 ]
 
@@ -132,63 +41,36 @@ TIER_LABELS = {
 
 
 def _mask_key(key: str) -> str:
-    """Show first 4 and last 4 chars, mask the rest."""
     if len(key) <= 10:
         return key[:2] + "***" + key[-2:]
     return key[:4] + "***" + key[-4:]
 
 
-def _check_elevenlabs(api_key: str) -> dict[str, Any]:
-    """Fetch ElevenLabs subscription info."""
+def _check_google(api_key: str) -> dict[str, Any]:
+    """Verify Google API key by calling Gemini with a tiny test prompt."""
     try:
-        resp = requests.get(
-            "https://api.elevenlabs.io/v1/user/subscription",
-            headers={"xi-api-key": api_key},
-            timeout=10,
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash-lite:generateContent?key={api_key}"
         )
+        body = {
+            "contents": [{"parts": [{"text": "Say OK"}]}],
+            "generationConfig": {"maxOutputTokens": 10},
+        }
+        resp = requests.post(url, json=body, timeout=15)
         if resp.status_code == 200:
-            data = resp.json()
-            return {
-                "plan": data.get("tier", "unknown"),
-                "characters_used": data.get("character_count", 0),
-                "characters_limit": data.get("character_limit", 0),
-                "characters_remaining": max(
-                    0, data.get("character_limit", 0) - data.get("character_count", 0)
-                ),
-                "next_reset": data.get("next_character_count_reset_unix"),
-            }
-        return {"error": f"HTTP {resp.status_code}"}
+            return {"status": "active", "gemini": "OK"}
+        return {"status": "error", "error": f"HTTP {resp.status_code}"}
     except Exception as e:
-        return {"error": str(e)}
-
-
-def _check_heygen(api_key: str) -> dict[str, Any]:
-    """Fetch HeyGen remaining quota."""
-    try:
-        resp = requests.get(
-            "https://api.heygen.com/v1/user/remaining_quota",
-            headers={"X-Api-Key": api_key},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            data = resp.json().get("data", {})
-            return {
-                "remaining_quota": data.get("remaining_quota", 0),
-                "plan": "active",
-            }
-        return {"error": f"HTTP {resp.status_code}"}
-    except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "error": str(e)}
 
 
 BALANCE_CHECKERS = {
-    "elevenlabs": _check_elevenlabs,
-    "heygen": _check_heygen,
+    "google": _check_google,
 }
 
 
 def get_api_key_status() -> list[dict[str, Any]]:
-    """Return status of all API keys for dashboard display."""
     results: list[dict[str, Any]] = []
 
     for entry in API_KEY_REGISTRY:
@@ -206,6 +88,7 @@ def get_api_key_status() -> list[dict[str, Any]]:
             "configured": is_set,
             "masked_value": _mask_key(raw_value) if is_set else "",
             "balance": None,
+            "apis_required": entry.get("apis_required", []),
         }
 
         if is_set and entry.get("balance_check"):
@@ -219,7 +102,6 @@ def get_api_key_status() -> list[dict[str, Any]]:
 
 
 def get_api_summary() -> dict[str, Any]:
-    """Return summary counts for the dashboard."""
     keys = get_api_key_status()
     configured = sum(1 for k in keys if k["configured"])
     total = len(keys)
