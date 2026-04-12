@@ -73,26 +73,25 @@
   </div>
 </section>
 
-<!-- Pipelines -->
+<!-- Video Creation Modes -->
 <section class="card">
-  <h2>Production Pipelines</h2>
-  <p class="muted">Each pipeline is a complete workflow from idea to finished video. Select one when creating a project.</p>
+  <h2>Video Creation Modes</h2>
+  <p class="muted">Two ways to create AI-powered videos. All processing uses Google AI (Gemini + Imagen 4 + Cloud TTS).</p>
   <div class="pipeline-grid">
-    {% for p in pipelines %}
     <div class="pipeline-card">
       <div class="pipeline-header">
-        <h3>{{ p.name | replace("-", " ") | title }}</h3>
-        {% if p.stability == "production" %}
-          <span class="badge badge-ok">Production</span>
-        {% elif p.stability == "beta" %}
-          <span class="badge badge-warn">Beta</span>
-        {% else %}
-          <span class="badge">{{ p.stability }}</span>
-        {% endif %}
+        <h3>AI Video Creator</h3>
+        <span class="badge badge-ok">Production</span>
       </div>
-      <p>{{ p.description }}</p>
+      <p>Describe your topic and the AI generates the full video: script writing, AI image generation, narration, Ken Burns effects, crossfade transitions, and optional subtitles.</p>
     </div>
-    {% endfor %}
+    <div class="pipeline-card">
+      <div class="pipeline-header">
+        <h3>Cinematic (Audio + Reference)</h3>
+        <span class="badge badge-ok">Production</span>
+      </div>
+      <p>Upload your audio file and an optional reference video URL. The AI transcribes sentence-by-sentence, extracts characters &amp; scenes, generates matching images, and composes a cinematic video synced to your audio timing.</p>
+    </div>
   </div>
 </section>
 

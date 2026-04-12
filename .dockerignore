@@ -21,3 +21,9 @@
 **/agent-transcripts
 **/terminals
 **/.cursor
+**/.claude
+**/.agents
+**/AGENT_GUIDE.md
+**/CLAUDE.md
+**/AGENTS.md
+**/test_pipeline.py

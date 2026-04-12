@@ -111,7 +111,7 @@ def _gemini_generate(prompt: str, max_tokens: int = 4096, retries: int = 4) -> s
     if not api_key:
         return None
 
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"]
+    models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
 
     for model in models:
         url = GEMINI_ENDPOINT.format(model=model) + f"?key={api_key}"
@@ -158,9 +158,13 @@ def _gemini_generate(prompt: str, max_tokens: int = 4096, retries: int = 4) -> s
 # Google Imagen
 # ---------------------------------------------------------------------------
 
-IMAGEN_ENDPOINT = (
+IMAGEN_MODELS = [
+    "imagen-4.0-fast-generate-001",
+    "imagen-4.0-generate-001",
+]
+IMAGEN_ENDPOINT_TMPL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "imagen-3.0-generate-002:predict"
+    "{model}:predict"
 )
 
 def _google_imagen_generate(
@@ -170,55 +174,65 @@ def _google_imagen_generate(
     if not api_key:
         return None
 
-    url = f"{IMAGEN_ENDPOINT}?key={api_key}"
-    body = {
-        "instances": [{"prompt": prompt}],
-        "parameters": {
-            "aspectRatio": aspect_ratio,
-            "sampleCount": 1,
-        },
-    }
+    for model in IMAGEN_MODELS:
+        url = IMAGEN_ENDPOINT_TMPL.format(model=model) + f"?key={api_key}"
+        body = {
+            "instances": [{"prompt": prompt}],
+            "parameters": {
+                "aspectRatio": aspect_ratio,
+                "sampleCount": 1,
+            },
+        }
 
-    for attempt in range(3):
-        try:
-            resp = requests.post(
-                url, json=body,
-                headers={"Content-Type": "application/json"},
-                timeout=90,
-            )
-            if resp.status_code == 429:
-                wait = 5 * (attempt + 1)
-                _log(f"Imagen rate-limited, waiting {wait}s...")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            data = resp.json()
+        for attempt in range(3):
+            try:
+                resp = requests.post(
+                    url, json=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-goog-api-key": api_key,
+                    },
+                    timeout=90,
+                )
+                if resp.status_code == 429:
+                    wait = 5 * (attempt + 1)
+                    _log(f"Imagen rate-limited on {model}, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+                if resp.status_code == 404:
+                    _log(f"Imagen model {model} not found (404), trying next")
+                    break
+                resp.raise_for_status()
+                data = resp.json()
 
-            predictions = data.get("predictions", [])
-            if not predictions:
-                _log("Imagen returned no predictions")
+                predictions = data.get("predictions", [])
+                if not predictions:
+                    _log("Imagen returned no predictions")
+                    return None
+
+                img_b64 = predictions[0].get("bytesBase64Encoded", "")
+                if not img_b64:
+                    _log("Imagen returned empty image data")
+                    return None
+
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(base64.b64decode(img_b64))
+
+                if output_path.exists() and output_path.stat().st_size > 500:
+                    _track_api("imagen", cost_estimate=0.04)
+                    return str(output_path)
                 return None
 
-            img_b64 = predictions[0].get("bytesBase64Encoded", "")
-            if not img_b64:
-                _log("Imagen returned empty image data")
-                return None
-
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(base64.b64decode(img_b64))
-
-            if output_path.exists() and output_path.stat().st_size > 500:
-                _track_api("imagen", cost_estimate=0.04)
-                return str(output_path)
-            return None
-
-        except requests.exceptions.HTTPError as e:
-            _log(f"Imagen API error (attempt {attempt+1}): {e}")
-            if attempt < 2:
-                time.sleep(3)
-        except Exception as e:
-            _log(f"Imagen error: {e}")
-            break
+            except requests.exceptions.HTTPError as e:
+                if "404" in str(e):
+                    _log(f"Imagen model {model} not found, trying next")
+                    break
+                _log(f"Imagen API error ({model}, attempt {attempt+1}): {e}")
+                if attempt < 2:
+                    time.sleep(3)
+            except Exception as e:
+                _log(f"Imagen error: {e}")
+                break
 
     return None
 
@@ -610,22 +624,28 @@ def step_transcribe_audio(audio_path: str, language: str = "english") -> str | N
         }
         mime_type = mime_map.get(ext, "audio/mpeg")
 
-        gemini_url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.0-flash:generateContent"
-            f"?key={api_key}"
-        )
-        body = {
-            "contents": [{
-                "parts": [
-                    {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
-                    {"text": f"Transcribe this audio to text. The audio is in {language}. "
-                             f"Return ONLY the transcribed text, nothing else."},
-                ]
-            }],
-            "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1},
-        }
-        resp = requests.post(gemini_url, json=body, timeout=120)
+        multimodal_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+        for mm_model in multimodal_models:
+            gemini_url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{mm_model}:generateContent"
+                f"?key={api_key}"
+            )
+            body = {
+                "contents": [{
+                    "parts": [
+                        {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
+                        {"text": f"Transcribe this audio to text. The audio is in {language}. "
+                                 f"Return ONLY the transcribed text, nothing else."},
+                    ]
+                }],
+                "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1},
+            }
+            resp = requests.post(gemini_url, json=body, timeout=120)
+            if resp.status_code == 404:
+                _log(f"Transcription model {mm_model} not found, trying next")
+                continue
+            break
         if resp.status_code == 200:
             data = resp.json()
             _track_api("gemini", cost_estimate=0.001)
@@ -661,16 +681,19 @@ def _transcribe_with_timestamps(audio_path: str, language: str = "english") -> l
         }
         mime_type = mime_map.get(ext, "audio/mpeg")
 
-        gemini_url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.0-flash:generateContent"
-            f"?key={api_key}"
-        )
-        body = {
-            "contents": [{
-                "parts": [
-                    {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
-                    {"text": f"""Transcribe this {language} audio sentence by sentence.
+        multimodal_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+        resp = None
+        for mm_model in multimodal_models:
+            gemini_url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{mm_model}:generateContent"
+                f"?key={api_key}"
+            )
+            body = {
+                "contents": [{
+                    "parts": [
+                        {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
+                        {"text": f"""Transcribe this {language} audio sentence by sentence.
 For each sentence, estimate its start and end time in seconds.
 
 Return a JSON array where each element has:
@@ -681,12 +704,16 @@ Return a JSON array where each element has:
 
 Be as accurate as possible with timing. Group words into natural sentences.
 Respond ONLY with the JSON array."""},
-                ]
-            }],
-            "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1},
-        }
-        resp = requests.post(gemini_url, json=body, timeout=120)
-        if resp.status_code == 200:
+                    ]
+                }],
+                "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1},
+            }
+            resp = requests.post(gemini_url, json=body, timeout=120)
+            if resp.status_code == 404:
+                _log(f"Timestamp model {mm_model} not found, trying next")
+                continue
+            break
+        if resp and resp.status_code == 200:
             data = resp.json()
             _track_api("gemini", cost_estimate=0.001)
             text = data["candidates"][0]["content"]["parts"][0]["text"]

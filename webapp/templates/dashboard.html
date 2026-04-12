@@ -43,13 +43,10 @@
       <div class="form-group">
         <label for="pipeline_name">Pipeline</label>
         <select name="pipeline_name" id="pipeline_name" required>
-          <option value="">Select a pipeline...</option>
           {% for p in pipelines %}
-            {% if p.name != "framework-smoke" and p.name != "avatar-spokesperson" %}
             <option value="{{ p.name }}"
               {% if p.name == "animated-explainer" %}selected{% endif %}
-            >{{ p.name | replace("-", " ") | title }}{% if p.stability == "beta" %} (Beta){% endif %}</option>
-            {% endif %}
+            >{% if p.name == "animated-explainer" %}AI Video Creator{% elif p.name == "cinematic" %}Cinematic (Audio + Reference){% else %}{{ p.name | replace("-", " ") | title }}{% endif %}</option>
           {% endfor %}
         </select>
         <p class="muted" style="font-size:0.82rem;margin-top:4px" id="pipeline-hint"></p>
@@ -280,15 +277,8 @@
 <script>
 (function(){
   var hints = {
-    "animated-explainer": "Google AI creates script, images (Imagen), narration (Cloud TTS) & composes video. Best for educational & explainer content.",
-    "cinematic": "Dramatic/mood-led videos — trailers, brand films, montages. Provide a reference video for style matching.",
-    "animation": "Motion graphics & animated explainers — diagrams, kinetic typography. Powered by Google Gemini + Imagen.",
-    "hybrid": "Combines your own footage with AI-generated support visuals, overlays & graphics.",
-    "screen-demo": "Polishes raw screen recordings with callouts, zoom crops & subtitles. Upload a screen capture.",
-    "talking-head": "Requires raw footage of a person speaking as input.",
-    "clip-factory": "Beta — Cuts long-form content (webinar, stream) into social-ready short clips.",
-    "localization-dub": "Beta — Translates & dubs an existing video into other languages.",
-    "podcast-repurpose": "Beta — Converts podcast audio into visual content & social clips.",
+    "animated-explainer": "Describe your topic — Google AI generates the script, images (Imagen 4), narration (Cloud TTS), and composes the full video with transitions.",
+    "cinematic": "Upload your audio file + optional reference video URL — AI transcribes, extracts characters & scenes, generates matching images, and composes a cinematic video synced to your audio.",
   };
   var sel = document.getElementById("pipeline_name");
   var hint = document.getElementById("pipeline-hint");
