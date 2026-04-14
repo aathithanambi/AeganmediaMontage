@@ -569,10 +569,30 @@ def _summarize_reference(analysis: dict[str, Any]) -> str:
     return "\n".join(parts) if parts else "No analysis available."
 
 
+DEFAULT_STYLE: dict[str, str] = {
+    "art_style": (
+        "2D digital illustration with soft oil-painting textures, "
+        "clean outlines, expressive character faces, warm skin tones, "
+        "soft gradient background washes, storybook quality"
+    ),
+    "image_type": "2D illustrated oil-painting style",
+    "editing_style": "slow Ken Burns zoom/pan, soft dissolve transitions, gentle sparkle particle effects",
+    "color_palette": "warm earth tones — golden yellows, soft oranges, muted greens, warm browns, golden hour lighting",
+    "mood": "cinematic emotional storybook",
+}
+
+IMAGE_STYLE_PREFIX = (
+    "2D digital illustration with soft oil-painting textures, "
+    "clean character outlines, expressive faces, warm earth-tone palette "
+    "(golden yellows, soft oranges, muted greens, warm browns), "
+    "soft gradient background, golden hour warm lighting, "
+    "storybook quality, 16:9 wide cinematic composition. "
+)
+
 def _analyze_reference_style(ref_summary: str) -> dict[str, str]:
     """Use Gemini to identify the visual art style, image type, and editing approach."""
     if not _google_available() or not ref_summary:
-        return {"art_style": "realistic photography", "image_type": "photo", "editing_style": "smooth transitions"}
+        return dict(DEFAULT_STYLE)
 
     llm_prompt = f"""Analyze this reference video and identify its visual style.
 
@@ -599,7 +619,7 @@ Respond ONLY with the JSON object."""
         except (json.JSONDecodeError, ValueError):
             pass
 
-    return {"art_style": "realistic photography", "image_type": "photo", "editing_style": "smooth transitions"}
+    return dict(DEFAULT_STYLE)
 
 
 # ---------------------------------------------------------------------------
@@ -937,15 +957,17 @@ Script:
 For each scene, provide a JSON array with exactly {scene_count} objects. Each object must have:
 - "narration": the exact portion of the script for this scene (1-3 sentences)
 - "image_prompt": A DETAILED prompt for AI image generation. CRITICAL RULES:
+  * EVERY prompt MUST start with: "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette (golden yellows, soft oranges, muted greens, warm browns), soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition."
+  * Then describe the SPECIFIC scene content after the style prefix
   * Describe the EXACT same character appearance every time a character appears
-  * Include the art style in every prompt (e.g. "{ref_style.get('art_style', 'realistic')}" style)
-  * Describe: subject, setting, lighting, mood, colors, camera angle
-  * For characters: include ALL physical features (age, hair color, clothing, etc.)
-  * For locations: include specific environmental details
+  * For characters: include ALL physical features (age, hair color, clothing, build, expression)
+  * For animals: describe exact species, colors, markings consistently
+  * For locations: include specific environmental details (trees, water, sky, buildings)
+  * Style reference: like Indian Tamil YouTube story channels — warm, emotional, expressive 2D illustrated art
 - "search_query": 2-4 word search query for the scene content
 - "mood": one word describing the scene mood
 - "duration": estimated seconds this scene should be shown (match audio timing if available)
-- "transition": suggested transition to next scene ("fade", "dissolve", "slide", "zoom")
+- "transition": "dissolve" for emotional scenes, "fade" for scene changes, "zoom" for dramatic moments
 
 Respond ONLY with the JSON array."""
 
@@ -978,14 +1000,11 @@ Respond ONLY with the JSON array."""
             query = keywords[i % len(keywords)]
         scenes.append({
             "narration": section,
-            "image_prompt": (
-                f"Professional cinematic photograph, 16:9, dramatic lighting, "
-                f"shallow depth of field. Subject: {query}. Photo-realistic, high detail."
-            ),
+            "image_prompt": f"{IMAGE_STYLE_PREFIX}Subject: {query}. Detailed, expressive characters.",
             "search_query": query,
-            "mood": "professional",
+            "mood": "cinematic",
             "duration": 6.0,
-            "transition": "fade",
+            "transition": "dissolve",
         })
     return scenes
 
@@ -1011,7 +1030,6 @@ def _generate_scene_plan_batched(
         sent_end = int(total_sentences * end_scene / total_scenes)
         script_chunk = " ".join(sentences[sent_start:sent_end])
 
-        art_style = ref_style.get("art_style", "realistic") if ref_style else "realistic"
         llm_prompt = f"""You are a video scene planner. Create scenes {start_scene+1} to {end_scene} of a {total_scenes}-scene video.
 
 Title: {title}
@@ -1022,11 +1040,11 @@ Script portion (scenes {start_scene+1}-{end_scene}):
 
 Create a JSON array with exactly {count_this_batch} scene objects. Each must have:
 - "narration": portion of script for this scene
-- "image_prompt": DETAILED AI image prompt including style "{art_style}"
+- "image_prompt": EVERY prompt MUST start with "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette, soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition." Then describe the specific scene.
 - "search_query": 2-4 word search query
 - "mood": one word mood
 - "duration": seconds (float)
-- "transition": "fade", "dissolve", "slide", or "zoom"
+- "transition": "dissolve" for emotional, "fade" for scene changes, "zoom" for dramatic
 
 Respond ONLY with the JSON array."""
 
@@ -1046,9 +1064,9 @@ Respond ONLY with the JSON array."""
             narr = sentences[idx] if idx < total_sentences else f"Scene {start_scene + j + 1}"
             all_scenes.append({
                 "narration": narr,
-                "image_prompt": f"Professional cinematic scene, {art_style}. {narr[:100]}",
+                "image_prompt": f"{IMAGE_STYLE_PREFIX}{narr[:100]}",
                 "search_query": " ".join(re.findall(r"[a-zA-Z]{3,}", narr)[:3]),
-                "mood": "professional",
+                "mood": "cinematic",
                 "duration": 8.0,
                 "transition": "fade",
             })
@@ -1191,6 +1209,9 @@ def step_fetch_images(
         image_prompt = scene.get("image_prompt", "")
         if not image_prompt:
             image_prompt = scene.get("search_query", "abstract background")
+
+        if "2d" not in image_prompt.lower() and "illustrat" not in image_prompt.lower() and "oil" not in image_prompt.lower():
+            image_prompt = f"{IMAGE_STYLE_PREFIX}{image_prompt}"
 
         pct = int((i / total) * 100) if total > 0 else 0
         _log(f"Scene {i+1}/{total}: generating image via Imagen ({pct}%)")

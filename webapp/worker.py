@@ -324,6 +324,14 @@ def _execute_run(run: dict) -> None:
                     log.info("  stdout> %s", line)
                     elapsed = time.monotonic() - start_ts
 
+                    cancel_check = db.pipeline_runs.find_one(
+                        {"_id": run["_id"]}, {"status": 1}
+                    )
+                    if cancel_check and cancel_check.get("status") == "cancelled":
+                        log.info("Run %s was cancelled by user, killing pipeline", run["_id"])
+                        proc.kill()
+                        break
+
                     img_match = re.search(r"Scene (\d+)/(\d+).*Imagen", line)
                     if img_match:
                         cur, tot = int(img_match.group(1)), int(img_match.group(2))
@@ -361,6 +369,23 @@ def _execute_run(run: dict) -> None:
         "Command finished | exit=%d elapsed=%.1fs stdout=%d bytes stderr=%d bytes",
         proc.returncode, elapsed, len(stdout), len(stderr),
     )
+
+    # Check if cancelled while running
+    final_status = db.pipeline_runs.find_one({"_id": run["_id"]}, {"status": 1})
+    if final_status and final_status.get("status") == "cancelled":
+        log.info("Run %s was cancelled — skipping completion", run["_id"])
+        api_usage = _extract_api_usage(stdout)
+        _store_api_usage(run, api_usage)
+        db.pipeline_runs.update_one(
+            {"_id": run["_id"]},
+            {"$set": {
+                "stdout": stdout[-12000:],
+                "stderr": stderr[-12000:],
+                "elapsedSeconds": elapsed,
+                "apiUsage": api_usage,
+            }},
+        )
+        return
 
     if proc.returncode != 0:
         api_usage = _extract_api_usage(stdout)
@@ -404,6 +429,11 @@ def run_forever() -> None:
             continue
         log.info("=" * 60)
         log.info("Processing run %s", run["_id"])
+        current = get_db().pipeline_runs.find_one({"_id": run["_id"]}, {"status": 1})
+        if current and current.get("status") == "cancelled":
+            log.info("Run %s already cancelled, skipping", run["_id"])
+            log.info("=" * 60)
+            continue
         try:
             _execute_run(run)
         except subprocess.TimeoutExpired:

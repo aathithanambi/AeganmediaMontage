@@ -26,6 +26,6 @@ RUN chmod +x /app/docker/app-entrypoint.sh && \
 
 USER appuser:appgroup
 
-EXPOSE 41006
+EXPOSE 51004
 
 ENTRYPOINT ["/app/docker/app-entrypoint.sh"]

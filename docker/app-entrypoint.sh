@@ -26,5 +26,11 @@ if [ "${INIT_DB_ON_BOOT:-false}" = "true" ]; then
   python -m webapp.bootstrap
 fi
 
-exec uvicorn webapp.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-41006}"
+# If arguments are passed (e.g. "python -m webapp.worker"), run those instead of uvicorn
+if [ $# -gt 0 ]; then
+  echo "Running custom command: $@"
+  exec "$@"
+fi
+
+exec uvicorn webapp.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-51004}"
 

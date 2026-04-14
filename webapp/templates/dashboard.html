@@ -177,6 +177,8 @@
               <span class="badge badge-info">Running</span>
             {% elif run.status == "queued" %}
               <span class="badge">Queued</span>
+            {% elif run.status == "cancelled" %}
+              <span class="badge badge-danger">Cancelled</span>
             {% elif run.status == "failed" %}
               <span class="badge badge-danger">Failed</span>
             {% else %}
@@ -187,8 +189,13 @@
           <td>
             {% if run.outputVideoPath %}
               <a href="/download/run/{{ run.id }}" class="btn btn-primary btn-sm">Download</a>
+            {% elif run.status in ["queued", "running"] %}
+              <a href="/dashboard/run/{{ run.id }}" class="btn btn-sm" style="margin-right:4px">View</a>
+              <button class="btn btn-danger btn-sm" onclick="cancelFromDash('{{ run.id }}', this)">Cancel</button>
             {% elif run.status == "failed" %}
               <a href="/dashboard/run/{{ run.id }}" class="muted">View Error</a>
+            {% elif run.status == "cancelled" %}
+              <span class="muted">Cancelled</span>
             {% else %}
               <span class="muted">Pending</span>
             {% endif %}
@@ -297,5 +304,18 @@
     toggleSubOpts();
   }
 })();
+
+function cancelFromDash(runId, btn) {
+  if (!confirm("Cancel this video? Credits will be refunded.")) return;
+  btn.disabled = true;
+  btn.textContent = "Cancelling...";
+  fetch("/api/run/" + runId + "/cancel", { method: "POST" })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.status === "cancelled") location.reload();
+      else { alert("Failed: " + (data.detail || "Unknown error")); btn.disabled = false; btn.textContent = "Cancel"; }
+    })
+    .catch(function() { alert("Network error"); btn.disabled = false; btn.textContent = "Cancel"; });
+}
 </script>
 {% endblock %}

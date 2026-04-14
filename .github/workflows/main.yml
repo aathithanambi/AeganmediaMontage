@@ -128,7 +128,7 @@ jobs:
             printf '%s\n' \
               "APP_NAME=AeganMediaMontage" \
               "HOST=0.0.0.0" \
-              "PORT=41006" \
+              "PORT=51004" \
               "JWT_SECRET=${{ secrets.JWT_SECRET }}" \
               "JWT_EXP_MINUTES=1440" \
               "MONGODB_URI=${{ secrets.MONGODB_URI }}" \
@@ -173,7 +173,7 @@ jobs:
               --log-driver json-file \
               --log-opt max-size=20m \
               --log-opt max-file=5 \
-              -p 127.0.0.1:41006:41006 \
+              -p 127.0.0.1:51004:51004 \
               ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
             # Run worker
@@ -198,7 +198,7 @@ jobs:
             # Health check
             echo "Waiting for app to start..."
             for i in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:41006/health >/dev/null 2>&1; then
+              if curl -fsS http://127.0.0.1:51004/health >/dev/null 2>&1; then
                 echo "Health check passed!"
                 break
               fi

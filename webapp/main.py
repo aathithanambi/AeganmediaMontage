@@ -530,6 +530,37 @@ def run_progress_api(request: Request, run_id: str):
     })
 
 
+@app.post("/api/run/{run_id}/cancel")
+def cancel_run(request: Request, run_id: str):
+    """Cancel a queued or running pipeline run."""
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one({"_id": ObjectId(run_id)})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if run["status"] not in ("queued", "running"):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel run in '{run['status']}' state")
+
+    db.pipeline_runs.update_one(
+        {"_id": ObjectId(run_id)},
+        {"$set": {
+            "status": "cancelled",
+            "error": f"Cancelled by {user.get('email', 'user')}",
+            "updatedAt": datetime.now(UTC),
+        }},
+    )
+
+    if run.get("creditsCharged", 0) > 0 and run.get("requestedBy"):
+        db.users.update_one(
+            {"_id": ObjectId(run["requestedBy"])},
+            {"$inc": {"credits": run["creditsCharged"]}, "$set": {"updatedAt": datetime.now(UTC)}},
+        )
+
+    return JSONResponse({"status": "cancelled", "refunded": run.get("creditsCharged", 0)})
+
+
 @app.get("/preview/run/{run_id}")
 def preview_run_video(request: Request, run_id: str):
     """Serve video for in-browser preview (same auth as download)."""

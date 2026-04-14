@@ -17,6 +17,8 @@
         <span class="badge badge-info badge-lg" id="status-badge">Running</span>
       {% elif run.status == "queued" %}
         <span class="badge badge-lg" id="status-badge">Queued</span>
+      {% elif run.status == "cancelled" %}
+        <span class="badge badge-danger badge-lg">Cancelled</span>
       {% elif run.status == "failed" %}
         <span class="badge badge-danger badge-lg">Failed</span>
       {% else %}
@@ -33,9 +35,12 @@
   <div class="progress-bar-container">
     <div class="progress-bar-fill" id="progress-fill" style="width: {{ run.get('progress', 0) }}%"></div>
   </div>
-  <div style="display:flex;justify-content:space-between;margin-top:8px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
     <p class="muted" id="progress-text">{{ run.get('progress', 0) }}% — Processing your video...</p>
-    <p class="muted" id="eta-text"></p>
+    <div style="display:flex;align-items:center;gap:12px">
+      <p class="muted" id="eta-text"></p>
+      <button class="btn btn-danger btn-sm" id="cancel-btn" onclick="cancelRun()">Cancel</button>
+    </div>
   </div>
 </section>
 {% endif %}
@@ -125,6 +130,20 @@
 
 {% if run.status in ["running", "queued"] %}
 <script>
+function cancelRun() {
+  if (!confirm("Are you sure you want to cancel this video? Credits will be refunded.")) return;
+  const btn = document.getElementById("cancel-btn");
+  btn.disabled = true;
+  btn.textContent = "Cancelling...";
+  fetch("/api/run/{{ run._id }}/cancel", { method: "POST" })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === "cancelled") location.reload();
+      else { alert("Failed to cancel: " + (data.detail || "Unknown error")); btn.disabled = false; btn.textContent = "Cancel"; }
+    })
+    .catch(() => { alert("Network error"); btn.disabled = false; btn.textContent = "Cancel"; });
+}
+
 (function() {
   const runId = "{{ run._id }}";
   const fill = document.getElementById("progress-fill");
