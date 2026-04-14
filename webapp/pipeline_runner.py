@@ -21,7 +21,7 @@ import sys
 import textwrap
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable
 
@@ -104,6 +104,25 @@ def _progress_pct(completed_len: int, within_stage: float = 0.0) -> int:
         return 0
     frac = max(0.0, min(0.999, within_stage))
     return max(0, min(99, int(100 * (completed_len + frac) / _N_PIPELINE_STAGES)))
+
+
+def _cpu_parallel_cap() -> int:
+    """Target max logical cores for parallel pools: CPU_PARALLEL_FRACTION * cpu_count (OS buffer)."""
+    try:
+        frac = float(os.environ.get("CPU_PARALLEL_FRACTION", "0.85"))
+    except ValueError:
+        frac = 0.85
+    frac = max(0.35, min(0.95, frac))
+    n = os.cpu_count() or 2
+    return max(1, int(n * frac))
+
+
+def _clamp_parallel_workers(requested: int, *, per_job_threads: int = 1) -> int:
+    """Clamp pool size so (workers × encoder threads) stays within ~CPU cap."""
+    cap = _cpu_parallel_cap()
+    thr = max(1, int(per_job_threads))
+    max_by_cpu = max(1, cap // thr)
+    return max(1, min(int(requested), max_by_cpu))
 
 
 def _merge_timings_for_budget(
@@ -358,6 +377,59 @@ def _google_imagen_generate(
     return None
 
 
+def _build_character_consistency_block(
+    character_data: dict[str, Any] | None,
+    *,
+    max_chars: int = 3200,
+) -> str:
+    """Compact bible for prompts — same text prepended / paired with reference for every shot."""
+    if not character_data:
+        return ""
+    chars = character_data.get("characters") or []
+    if not chars:
+        return ""
+    lines: list[str] = [
+        "LOCKED SERIES DESIGNS — use identically in every frame (faces, hair, skin tone, "
+        "age, body proportions, signature outfit colors and patterns):",
+    ]
+    for ch in chars[:14]:
+        if not isinstance(ch, dict):
+            continue
+        name = (ch.get("name") or "Character").strip()
+        desc = (ch.get("description") or "").strip().replace("\n", " ")
+        role = (ch.get("role") or "").strip()
+        if len(desc) > 420:
+            desc = desc[:417] + "..."
+        bit = f"• {name}"
+        if role:
+            bit += f" ({role})"
+        bit += f": {desc}" if desc else ""
+        lines.append(bit)
+    locs = character_data.get("locations") or []
+    if locs:
+        lines.append("RECURRING LOCATIONS (keep visual identity when reused):")
+        for loc in locs[:6]:
+            if not isinstance(loc, dict):
+                continue
+            ln = (loc.get("name") or "").strip()
+            ld = (loc.get("description") or "").strip().replace("\n", " ")
+            if len(ld) > 200:
+                ld = ld[:197] + "..."
+            if ln or ld:
+                lines.append(f"• {ln}: {ld}" if ln else f"• {ld}")
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    return text
+
+
+_GEMINI_REF_IMAGE_INSTRUCTION = """The FIRST attached image is the OFFICIAL CHARACTER REFERENCE for this video.
+Every illustrated scene MUST keep the same character designs: identical faces, hairstyles and colors,
+skin tones, ages, body shapes, and recurring costume details as shown in that reference.
+Match the same 2D illustrated art style. Only change pose, expression, camera angle, and background
+to fit the scene description below. Do not redesign or swap characters."""
+
+
 def _gemini_response_first_image_b64(data: dict[str, Any]) -> tuple[str | None, str]:
     """Parse generateContent response for inline image bytes (camelCase or snake_case)."""
     for cand in data.get("candidates") or []:
@@ -382,6 +454,9 @@ def _google_gemini_native_image_generate(
     prompt: str,
     output_path: Path,
     aspect_ratio: str = "16:9",
+    *,
+    reference_image_b64: str | None = None,
+    reference_mime: str = "image/png",
 ) -> str | None:
     """Image generation via Gemini native image models (aka Nano Banana family) — generateContent + IMAGE."""
     api_key = _google_api_key()
@@ -398,6 +473,16 @@ def _google_gemini_native_image_generate(
 
     modality_variants: list[list[str]] = [["TEXT", "IMAGE"], ["IMAGE"]]
 
+    user_parts: list[dict[str, Any]] = []
+    if reference_image_b64:
+        user_parts.append({
+            "inline_data": {
+                "mime_type": reference_mime,
+                "data": reference_image_b64,
+            },
+        })
+    user_parts.append({"text": prompt})
+
     for model in models:
         url = GEMINI_ENDPOINT.format(model=model) + f"?key={api_key}"
         model_not_found = False
@@ -413,7 +498,7 @@ def _google_gemini_native_image_generate(
                 gen_cfg["imageConfig"] = {"aspectRatio": aspect_ratio}
 
             body: dict[str, Any] = {
-                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "contents": [{"role": "user", "parts": user_parts}],
                 "generationConfig": gen_cfg,
             }
 
@@ -476,6 +561,32 @@ def _google_gemini_native_image_generate(
             continue
 
     return None
+
+
+def _generate_character_reference_sheet(
+    character_data: dict[str, Any],
+    ref_style: dict[str, str] | None,
+    output_path: Path,
+) -> str | None:
+    """One Nano Banana still: lineup / sheet so later multimodal calls can lock designs."""
+    bible = _build_character_consistency_block(character_data, max_chars=3000)
+    if not bible:
+        return None
+    art = (ref_style or {}).get("art_style", "stylized illustration")
+    prompt = (
+        f"{IMAGE_STYLE_PREFIX}"
+        "Create a single wide 16:9 CHARACTER REFERENCE SHEET for an animated video. "
+        "Show ALL main characters together in one frame — clear faces, readable outfits, "
+        "neutral or slight smile poses, even lighting, no story action, no text labels. "
+        "This image will be reused to keep the same designs in every scene.\n\n"
+        f"Art direction: {art}.\n\n"
+        f"{bible}\n"
+        "Output one polished lineup illustration."
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return _google_gemini_native_image_generate(
+        prompt, output_path, aspect_ratio="16:9",
+    )
 
 
 def _meta_ai_style_extra() -> str:
@@ -1545,6 +1656,8 @@ def step_fetch_images(
     scene_plan: list[dict[str, Any]],
     output_dir: Path,
     *,
+    character_data: dict[str, Any] | None = None,
+    ref_style: dict[str, str] | None = None,
     on_image_progress: Callable[[int, int], None] | None = None,
 ) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1559,22 +1672,79 @@ def step_fetch_images(
         _log(f"IMAGE_BACKEND={backend!r} invalid — use gemini, imagen, or auto; defaulting to gemini")
         backend = "gemini"
 
-    parallel = max(1, min(8, int(os.environ.get("IMAGEN_PARALLEL", "3"))))
+    try:
+        req_img = int(os.environ.get("IMAGEN_PARALLEL", "3"))
+    except ValueError:
+        req_img = 3
+    parallel = _clamp_parallel_workers(max(1, min(8, req_img)), per_job_threads=1)
     _log(
-        f"Generating images (backend={backend}, parallel={parallel}) — "
-        f"Gemini native = Nano Banana family when backend=gemini",
+        f"Generating images (backend={backend}, parallel={parallel}, "
+        f"CPU cap={_cpu_parallel_cap()} logical cores) — "
+        f"Gemini native = Nano Banana when backend=gemini",
     )
+
+    bible_full = _build_character_consistency_block(character_data)
+    use_ref_image = (
+        bool(bible_full)
+        and os.environ.get("GEMINI_CHARACTER_REF_IMAGE", "1").strip().lower()
+        not in ("0", "false", "no", "off")
+    )
+    ref_sheet_b64: str | None = None
+    ref_sheet_mime = "image/png"
+    ref_path = output_dir / "_character_reference.png"
+    if use_ref_image and character_data and character_data.get("characters"):
+        _log("Generating character reference sheet (Nano Banana) for visual consistency...")
+        sheet = _generate_character_reference_sheet(
+            character_data, ref_style, ref_path,
+        )
+        if sheet and Path(sheet).exists():
+            ref_sheet_b64 = base64.b64encode(Path(sheet).read_bytes()).decode("ascii")
+            _log("Character reference sheet ready — scene stills will use multimodal locking")
+        else:
+            _log("Character reference sheet failed — falling back to text-only consistency")
+
+    def _wrap_prompt_for_backend(raw: str) -> str:
+        if not bible_full:
+            return raw
+        if backend == "imagen" or (
+            backend == "auto" and not ref_sheet_b64
+        ):
+            return (
+                "CHARACTER AND LOCATION CONSISTENCY (mandatory for every shot in this video):\n"
+                f"{bible_full}\n\n"
+                f"SCENE:\n{raw}"
+            )
+        if ref_sheet_b64:
+            backup = bible_full if len(bible_full) <= 1600 else bible_full[:1597] + "..."
+            return (
+                f"{_GEMINI_REF_IMAGE_INSTRUCTION}\n\n"
+                "DESIGN LOCK (text backup — must match reference image):\n"
+                f"{backup}\n\n"
+                f"SCENE ILLUSTRATION:\n{raw}"
+            )
+        return (
+            "CHARACTER CONSISTENCY (mandatory across all shots):\n"
+            f"{bible_full}\n\n"
+            f"SCENE:\n{raw}"
+        )
 
     def _generate_still(image_prompt: str, out: Path) -> str | None:
         if backend == "imagen":
             return _google_imagen_generate(image_prompt, out, aspect_ratio="16:9")
         if backend == "gemini":
             return _google_gemini_native_image_generate(
-                image_prompt, out, aspect_ratio="16:9",
+                image_prompt,
+                out,
+                aspect_ratio="16:9",
+                reference_image_b64=ref_sheet_b64,
+                reference_mime=ref_sheet_mime,
             )
-        # auto: prefer Gemini image, then Imagen
         r = _google_gemini_native_image_generate(
-            image_prompt, out, aspect_ratio="16:9",
+            image_prompt,
+            out,
+            aspect_ratio="16:9",
+            reference_image_b64=ref_sheet_b64,
+            reference_mime=ref_sheet_mime,
         )
         return r or _google_imagen_generate(image_prompt, out, aspect_ratio="16:9")
 
@@ -1590,6 +1760,8 @@ def step_fetch_images(
             image_prompt = f"{IMAGE_STYLE_PREFIX}{image_prompt}"
         if meta_extra and meta_extra.lower() not in image_prompt.lower():
             image_prompt = f"{meta_extra}{image_prompt}"
+
+        image_prompt = _wrap_prompt_for_backend(image_prompt)
 
         _log(f"Scene {i+1}/{len(scene_plan)}: queued image ({backend})")
         result_path = _generate_still(image_prompt, out)
@@ -1655,6 +1827,107 @@ def _escape_drawtext(text: str) -> str:
     return text
 
 
+_KB_PATTERNS: list[tuple[float, float, str]] = [
+    (1.0, 1.15, "center"),
+    (1.15, 1.0, "center"),
+    (1.0, 1.12, "left"),
+    (1.12, 1.0, "right"),
+]
+
+
+def _ffmpeg_one_slideshow_segment(
+    payload: dict[str, Any],
+) -> tuple[int, str, bool]:
+    """Encode one Ken-Burns (or fallback) clip — module-level for ProcessPoolExecutor."""
+    i = int(payload["i"])
+    img = str(payload["img"])
+    seg = Path(payload["seg"])
+    seg_dur = float(payload["seg_dur"])
+    W = int(payload["W"])
+    H = int(payload["H"])
+    FPS = int(payload["FPS"])
+    x264_preset = str(payload["x264_preset"])
+    x264_threads = int(payload.get("x264_threads", 1))
+    enable_subtitles = bool(payload.get("enable_subtitles"))
+    section = str(payload.get("section") or "")
+    pat_idx = int(payload.get("pat_idx", 0))
+    z_start, z_end, anchor = _KB_PATTERNS[pat_idx % len(_KB_PATTERNS)]
+
+    dur_frames = max(1, int(seg_dur * FPS))
+    if anchor == "left":
+        x_expr = "0"
+    elif anchor == "right":
+        x_expr = f"(iw*{z_end}-{W})"
+    else:
+        x_expr = f"(iw*zoom-{W})/2"
+    y_expr = f"(ih*zoom-{H})/2"
+    zoom_expr = f"{z_start}+({z_end}-{z_start})*(on/{dur_frames})"
+    upscale_w = W * 2
+    upscale_h = H * 2
+    vf_parts = [
+        f"scale={upscale_w}:{upscale_h}:force_original_aspect_ratio=increase",
+        f"crop={upscale_w}:{upscale_h}",
+        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
+        f":d={dur_frames}:s={W}x{H}:fps={FPS}",
+        "format=yuv420p",
+    ]
+    if enable_subtitles and section.strip():
+        sub_text = _escape_drawtext(section.strip()[:120])
+        sub_end = max(0.15, seg_dur - min(0.5, seg_dur * 0.2))
+        vf_parts.append(
+            f"drawtext=text='{sub_text}'"
+            f":fontsize=32:fontcolor=white"
+            f":borderw=2:bordercolor=black@0.8"
+            f":x=(w-tw)/2:y=h-70"
+            f":enable='between(t,0.05,{sub_end})'"
+        )
+    vf = ",".join(vf_parts)
+    seg.parent.mkdir(parents=True, exist_ok=True)
+    enc_threads: list[str] = []
+    if x264_threads > 0:
+        enc_threads = ["-threads", str(x264_threads)]
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", img,
+        "-t", str(seg_dur),
+        "-vf", vf,
+        "-c:v", "libx264",
+        *enc_threads,
+        "-crf", "20", "-preset", x264_preset,
+        "-r", str(FPS), "-pix_fmt", "yuv420p",
+        str(seg),
+    ]
+    timeout_per_scene = max(180, int(seg_dur * 10))
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_per_scene, check=True)
+        if seg.exists() and seg.stat().st_size > 100:
+            return i, str(seg), True
+    except subprocess.CalledProcessError as e:
+        err = e.stderr[:200] if e.stderr else ""
+        try:
+            simple_cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-i", img,
+                "-t", str(seg_dur),
+                "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                       f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
+                "-c:v", "libx264",
+                *enc_threads,
+                "-crf", "20", "-preset", x264_preset,
+                "-r", str(FPS), "-pix_fmt", "yuv420p",
+                str(seg),
+            ]
+            subprocess.run(simple_cmd, capture_output=True, text=True, timeout=120, check=True)
+            if seg.exists() and seg.stat().st_size > 100:
+                return i, str(seg), True
+        except subprocess.CalledProcessError:
+            pass
+        print(f"[pipeline-runner] segment {i+1} ffmpeg failed: {err}", flush=True)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"[pipeline-runner] segment {i+1} error: {e}", flush=True)
+    return i, str(seg), False
+
+
 # ---------------------------------------------------------------------------
 # Compose video (FFmpeg with audio-synced timing)
 # ---------------------------------------------------------------------------
@@ -1703,85 +1976,96 @@ def step_compose_slideshow(
 
     temp_dir = output_path.parent / ".runner_tmp"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    segments: list[Path] = []
-
-    kb_patterns = [
-        (1.0, 1.15, "center"),
-        (1.15, 1.0, "center"),
-        (1.0, 1.12, "left"),
-        (1.12, 1.0, "right"),
-    ]
 
     try:
+        x264_thr_cfg = int(os.environ.get("FFMPEG_X264_THREADS", "1"))
+    except ValueError:
+        x264_thr_cfg = 1
+
+    cpu_cap = _cpu_parallel_cap()
+    seg_par_raw = os.environ.get("FFMPEG_SEGMENT_PARALLEL", "").strip()
+    if not seg_par_raw or seg_par_raw == "0":
+        requested = min(len(images), cpu_cap, 8)
+    else:
+        try:
+            requested = int(seg_par_raw)
+        except ValueError:
+            requested = cpu_cap
+        requested = max(1, min(len(images), requested))
+
+    thr_per_job = max(1, x264_thr_cfg) if x264_thr_cfg > 0 else 1
+    seg_workers = _clamp_parallel_workers(requested, per_job_threads=thr_per_job)
+    if len(images) < 3:
+        seg_workers = 1
+
+    if seg_workers <= 1:
+        if x264_thr_cfg <= 0:
+            x264_threads_eff = 0
+        else:
+            x264_threads_eff = max(1, min(x264_thr_cfg, cpu_cap))
+    else:
+        x264_threads_eff = thr_per_job
+
+    try:
+        frac = float(os.environ.get("CPU_PARALLEL_FRACTION", "0.85"))
+    except ValueError:
+        frac = 0.85
+    _log(
+        f"FFmpeg segments: workers={seg_workers}, libx264 threads/segment={x264_threads_eff or 'auto'}, "
+        f"CPU budget {cpu_cap}/{os.cpu_count() or '?'} logical cores ({frac * 100:.0f}% fraction)",
+    )
+
+    try:
+        payloads: list[dict[str, Any]] = []
         for i, img in enumerate(images):
-            seg = temp_dir / f"seg_{i:04d}.mp4"
-            seg_dur = durations[i]
-            dur_frames = int(seg_dur * FPS)
-            z_start, z_end, anchor = kb_patterns[i % len(kb_patterns)]
+            section = ""
+            if enable_subtitles and sections and i < len(sections):
+                section = sections[i] or ""
+            payloads.append({
+                "i": i,
+                "img": img,
+                "seg": str(temp_dir / f"seg_{i:04d}.mp4"),
+                "seg_dur": durations[i],
+                "W": W,
+                "H": H,
+                "FPS": FPS,
+                "x264_preset": x264_preset,
+                "x264_threads": x264_threads_eff,
+                "enable_subtitles": enable_subtitles,
+                "section": section,
+                "pat_idx": i,
+            })
 
-            if anchor == "left":
-                x_expr = "0"
-            elif anchor == "right":
-                x_expr = f"(iw*{z_end}-{W})"
-            else:
-                x_expr = f"(iw*zoom-{W})/2"
-            y_expr = f"(ih*zoom-{H})/2"
-
-            zoom_expr = f"{z_start}+({z_end}-{z_start})*(on/{dur_frames})"
-
-            upscale_w = W * 2
-            upscale_h = H * 2
-            vf_parts = [
-                f"scale={upscale_w}:{upscale_h}:force_original_aspect_ratio=increase",
-                f"crop={upscale_w}:{upscale_h}",
-                f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}'"
-                f":d={dur_frames}:s={W}x{H}:fps={FPS}",
-                "format=yuv420p",
-            ]
-
-            if enable_subtitles and sections and i < len(sections) and sections[i].strip():
-                sub_text = _escape_drawtext(sections[i].strip()[:120])
-                sub_end = max(0.15, seg_dur - min(0.5, seg_dur * 0.2))
-                vf_parts.append(
-                    f"drawtext=text='{sub_text}'"
-                    f":fontsize=32:fontcolor=white"
-                    f":borderw=2:bordercolor=black@0.8"
-                    f":x=(w-tw)/2:y=h-70"
-                    f":enable='between(t,0.05,{sub_end})'"
-                )
-
-            vf = ",".join(vf_parts)
-
-            cmd = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-i", img,
-                "-t", str(seg_dur),
-                "-vf", vf,
-                "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
-                "-r", str(FPS), "-pix_fmt", "yuv420p",
-                seg,
-            ]
-            timeout_per_scene = max(180, int(seg_dur * 10))
-            _log(f"Rendering scene {i+1}/{len(images)} ({seg_dur:.1f}s)")
-            try:
-                subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_per_scene, check=True)
-                segments.append(seg)
-            except subprocess.CalledProcessError as e:
-                _log(f"Ken Burns failed for scene {i+1}, trying simple scale: "
-                     f"{e.stderr[:150] if e.stderr else ''}")
-                simple_cmd = [
-                    "ffmpeg", "-y",
-                    "-loop", "1", "-i", img,
-                    "-t", str(seg_dur),
-                    "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
-                           f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
-                    "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
-                    "-r", str(FPS), "-pix_fmt", "yuv420p",
-                    seg,
+        segment_slots: list[Path | None] = [None] * len(images)
+        if seg_workers <= 1:
+            for p in payloads:
+                idx, path_str, ok = _ffmpeg_one_slideshow_segment(p)
+                _log(f"Rendering scene {idx + 1}/{len(images)} ({p['seg_dur']:.1f}s)")
+                if not ok:
+                    _log(f"FFmpeg segment {idx + 1} failed")
+                    return None
+                segment_slots[idx] = Path(path_str)
+        else:
+            _log(
+                f"Rendering {len(images)} scenes with parallel FFmpeg "
+                f"({seg_workers} workers)",
+            )
+            with ProcessPoolExecutor(max_workers=seg_workers) as pool:
+                futures = [
+                    pool.submit(_ffmpeg_one_slideshow_segment, p) for p in payloads
                 ]
-                subprocess.run(simple_cmd, capture_output=True, text=True,
-                               timeout=120, check=True)
-                segments.append(seg)
+                for fut in as_completed(futures):
+                    idx, path_str, ok = fut.result()
+                    if not ok:
+                        _log(f"FFmpeg segment {idx + 1} failed")
+                        return None
+                    segment_slots[idx] = Path(path_str)
+
+        segments = [segment_slots[i] for i in range(len(images)) if segment_slots[i]]
+
+        if len(segments) != len(images):
+            _log("FFmpeg segment count mismatch")
+            return None
 
         if len(segments) > 1:
             _log("Applying crossfade transitions")
@@ -2158,7 +2442,10 @@ def run_pipeline(prompt_file: str) -> None:
 
     # --- Phase 5: Character-consistent images ---
     images = step_fetch_images(
-        scene_plan, assets_dir / "images",
+        scene_plan,
+        assets_dir / "images",
+        character_data=character_data,
+        ref_style=ref_style,
         on_image_progress=_on_img_progress,
     )
 
