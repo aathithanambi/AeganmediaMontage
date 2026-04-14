@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -1001,6 +1003,148 @@ Respond ONLY with the JSON array."""},
 
 
 # ---------------------------------------------------------------------------
+# Character lock cache (skip re-extract when transcript unchanged)
+# ---------------------------------------------------------------------------
+
+def _env_truthy(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _character_lock_fingerprint(
+    script_for_visuals: str, title: str, art_style: str,
+) -> str:
+    """Stable hash so we can reuse character extraction + outfit locks across re-runs."""
+    blob = f"{title}\n{art_style}\n{script_for_visuals[:12000]}"
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _character_lock_path(assets_dir: Path) -> Path:
+    return assets_dir / "character_lock.json"
+
+
+def _load_character_lock(assets_dir: Path, fingerprint: str) -> dict[str, Any] | None:
+    path = _character_lock_path(assets_dir)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if data.get("fingerprint") != fingerprint:
+        return None
+    payload = data.get("character_data")
+    if isinstance(payload, dict):
+        _log("Character lock cache HIT — skipping character extraction API call")
+        return payload
+    return None
+
+
+def _save_character_lock(
+    assets_dir: Path, fingerprint: str, character_data: dict[str, Any],
+) -> None:
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    path = _character_lock_path(assets_dir)
+    try:
+        path.write_text(
+            json.dumps(
+                {"fingerprint": fingerprint, "character_data": character_data},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        _log(f"Character lock saved ({path.name})")
+    except OSError as e:
+        _log(f"Character lock save failed: {e}")
+
+
+def _normalize_character_entries(character_data: dict[str, Any]) -> dict[str, Any]:
+    """Ensure outfit/color fields exist for downstream prompts."""
+    for ch in character_data.get("characters") or []:
+        if not isinstance(ch, dict):
+            continue
+        if not ch.get("signature_outfit"):
+            ch["signature_outfit"] = (
+                ch.get("signature_garment")
+                or ch.get("outfit")
+                or ""
+            ).strip()
+        mc = ch.get("main_colors")
+        if mc is None:
+            mc = ch.get("palette") or ch.get("color_palette")
+        if isinstance(mc, str):
+            ch["main_colors"] = [c.strip() for c in mc.split(",") if c.strip()]
+        elif isinstance(mc, list):
+            ch["main_colors"] = [str(c).strip() for c in mc if str(c).strip()]
+        else:
+            ch["main_colors"] = []
+    return character_data
+
+
+def _build_character_lock_block(
+    character_data: dict[str, Any] | None,
+    *,
+    max_chars: int = 3600,
+) -> str:
+    """Text prepended to every image prompt — locks outfit + main colors per character."""
+    if not character_data:
+        return ""
+    chars = character_data.get("characters") or []
+    if not chars:
+        return ""
+    lines: list[str] = [
+        "SERIES CHARACTER LOCK — obey in EVERY frame:",
+        "• Keep the SAME face, hair, skin tone, age, and body type for each named character.",
+        "• Keep the SAME signature outfit and the SAME main garment colors unless the narration "
+        "explicitly says they changed clothes.",
+        "• Do NOT recolor outfits, swap palette, or invent new costumes between scenes.",
+        "",
+        "LOCKED CAST:",
+    ]
+    for ch in chars[:16]:
+        if not isinstance(ch, dict):
+            continue
+        name = (ch.get("name") or "Character").strip()
+        role = (ch.get("role") or "").strip()
+        desc = (ch.get("description") or "").strip().replace("\n", " ")
+        outfit = (ch.get("signature_outfit") or "").strip()
+        colors = ch.get("main_colors") or []
+        color_line = ", ".join(str(c) for c in colors[:10]) if colors else ""
+        bit = f"• {name}"
+        if role:
+            bit += f" ({role})"
+        lines.append(bit + ":")
+        if color_line:
+            lines.append(f"  MAIN COLORS (fixed): {color_line}")
+        if outfit:
+            lines.append(f"  SIGNATURE OUTFIT (fixed): {outfit}")
+        if desc:
+            if len(desc) > 520:
+                desc = desc[:517] + "..."
+            lines.append(f"  LOOK: {desc}")
+    lines.append("")
+    locs = character_data.get("locations") or []
+    if locs:
+        lines.append("RECURRING PLACES (keep look consistent when reused):")
+        for loc in locs[:6]:
+            if not isinstance(loc, dict):
+                continue
+            ln = (loc.get("name") or "").strip()
+            ld = (loc.get("description") or "").strip().replace("\n", " ")
+            if len(ld) > 200:
+                ld = ld[:197] + "..."
+            if ln or ld:
+                lines.append(f"• {ln}: {ld}" if ln else f"• {ld}")
+    text = "\n".join(lines).strip()
+    if len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Character & scene extraction (Gemini)
 # ---------------------------------------------------------------------------
 
@@ -1026,8 +1170,12 @@ Transcript:
 Return a JSON object with:
 - "characters": Array of character objects, each with:
   - "name": character name
-  - "description": detailed visual description (age, gender, clothing, hair, distinguishing features)
+  - "description": detailed visual description (age, gender, face shape, hair style and color, skin tone, build, distinguishing marks)
   - "role": their role in the story (protagonist, friend, narrator, etc.)
+  - "signature_outfit": ONE concise sentence naming the default costume with EXACT garment types and their MAIN colors
+ (e.g. "crimson cotton kurta, white dhoti, brown leather sandals"). This outfit repeats in every scene unless the story says they changed.
+  - "main_colors": array of 3-8 color names that MUST stay consistent for this character's clothes and accents
+    (e.g. ["deep crimson", "off-white", "warm brown"])
 - "locations": Array of location objects, each with:
   - "name": location name
   - "description": detailed visual description (type, size, setting — village/city, colors, atmosphere)
@@ -1040,6 +1188,7 @@ Return a JSON object with:
   - "camera_suggestion": suggested framing (e.g. "wide shot", "medium close-up", "aerial view")
 
 Be very specific with descriptions — they will be used to generate consistent AI images.
+The signature_outfit and main_colors are CRITICAL: image models must not drift dress or palette between scenes.
 
 Respond ONLY with the JSON object."""
 
@@ -1053,7 +1202,7 @@ Respond ONLY with the JSON object."""
                 locs = parsed.get("locations", [])
                 scenes = parsed.get("scenes", [])
                 _log(f"Extracted: {len(chars)} characters, {len(locs)} locations, {len(scenes)} scenes")
-                return parsed
+                return _normalize_character_entries(parsed)
         except (json.JSONDecodeError, ValueError) as e:
             _log(f"Character extraction parse failed: {e}")
 
@@ -1176,8 +1325,23 @@ Visual style requirements:
         if character_data and character_data.get("characters"):
             char_descs = []
             for ch in character_data["characters"]:
-                char_descs.append(f"  - {ch.get('name', 'Unknown')}: {ch.get('description', 'No description')}")
-            char_context = f"\nCharacters (use EXACT same descriptions for consistency):\n" + "\n".join(char_descs) + "\n"
+                if not isinstance(ch, dict):
+                    continue
+                nm = ch.get("name", "Unknown")
+                outfit = (ch.get("signature_outfit") or "").strip()
+                cols = ch.get("main_colors") or []
+                col_txt = ", ".join(str(c) for c in cols[:8]) if cols else ""
+                desc = ch.get("description", "No description")
+                extra = ""
+                if col_txt:
+                    extra += f" [LOCK colors: {col_txt}]"
+                if outfit:
+                    extra += f" [LOCK outfit: {outfit}]"
+                char_descs.append(f"  - {nm}: {desc}{extra}")
+            char_context = (
+                "\nCharacters (same face + outfit + main colors in every scene):\n"
+                + "\n".join(char_descs) + "\n"
+            )
 
             loc_descs = []
             for loc in character_data.get("locations", []):
@@ -1374,7 +1538,7 @@ def step_generate_scene_plan_timeline(
 Title: {title}
 Art direction: {IMAGE_STYLE_PREFIX}{style_line}
 
-Characters (keep consistent when the same person or animal reappears):
+Characters (keep face, signature_outfit, and main_colors IDENTICAL whenever the same person appears):
 {char_snip}
 
 Timed scenes (each line has duration_sec — copy it EXACTLY into the "duration" field as a float):
@@ -1383,6 +1547,7 @@ Timed scenes (each line has duration_sec — copy it EXACTLY into the "duration"
 Rules:
 - "narration": use the ORIG text for that scene (subtitle / spoken line).
 - "image_prompt": MUST begin with the same 2D oil-painting illustrated style wording, then describe ONLY what the EN line says is happening — literal visuals, not metaphors unrelated to the sentence.
+  For any character who appears, restate their signature_outfit and main_colors from the JSON above (do not invent new clothes or colors).
 - "duration": must equal duration_sec from that line (float).
 - "transition": "dissolve" or "fade".
 - "search_query": 2-4 English keywords.
@@ -1545,6 +1710,7 @@ def step_fetch_images(
     scene_plan: list[dict[str, Any]],
     output_dir: Path,
     *,
+    character_data: dict[str, Any] | None = None,
     on_image_progress: Callable[[int, int], None] | None = None,
 ) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1564,6 +1730,12 @@ def step_fetch_images(
         f"Generating images (backend={backend}, parallel={parallel}) — "
         f"Gemini native = Nano Banana family when backend=gemini",
     )
+
+    lock_block = _build_character_lock_block(character_data)
+    cache_enabled = _env_truthy("IMAGE_PROMPT_CACHE", True)
+    cache_root = output_dir.parent / "image_gen_cache"
+    if cache_enabled:
+        cache_root.mkdir(parents=True, exist_ok=True)
 
     def _generate_still(image_prompt: str, out: Path) -> str | None:
         if backend == "imagen":
@@ -1591,8 +1763,29 @@ def step_fetch_images(
         if meta_extra and meta_extra.lower() not in image_prompt.lower():
             image_prompt = f"{meta_extra}{image_prompt}"
 
+        if lock_block:
+            image_prompt = f"{lock_block}\n\n--- SCENE ---\n{image_prompt}"
+
+        cache_key = hashlib.sha256(
+            f"{backend}|{image_prompt}".encode("utf-8"),
+        ).hexdigest()
+        cache_file = cache_root / f"{cache_key}.png"
+
+        if cache_enabled and cache_file.is_file() and cache_file.stat().st_size > 500:
+            try:
+                shutil.copy2(cache_file, out)
+                _log(f"Scene {i+1}/{len(scene_plan)}: image cache HIT")
+                return i, str(out)
+            except OSError as e:
+                _log(f"Scene {i+1}: cache copy failed ({e}), regenerating")
+
         _log(f"Scene {i+1}/{len(scene_plan)}: queued image ({backend})")
         result_path = _generate_still(image_prompt, out)
+        if result_path and cache_enabled and Path(result_path).is_file():
+            try:
+                shutil.copy2(result_path, cache_file)
+            except OSError:
+                pass
         if not result_path:
             _log(f"Scene {i+1}: image generation failed — no image obtained")
         return i, result_path
@@ -2086,8 +2279,24 @@ def run_pipeline(prompt_file: str) -> None:
     if not script_for_visuals:
         script_for_visuals = script
 
-    # --- Phase 2b: Character & scene extraction ---
-    character_data = _extract_characters_and_scenes(script_for_visuals, title, ref_style)
+    # --- Phase 2b: Character & scene extraction (cached by transcript fingerprint) ---
+    char_fp = _character_lock_fingerprint(
+        script_for_visuals, title, str(ref_style.get("art_style", "")),
+    )
+    if _env_truthy("CHARACTER_CACHE", True):
+        cached_chars = _load_character_lock(assets_dir, char_fp)
+        if cached_chars is not None:
+            character_data = _normalize_character_entries(dict(cached_chars))
+        else:
+            character_data = _extract_characters_and_scenes(
+                script_for_visuals, title, ref_style,
+            )
+            _save_character_lock(assets_dir, char_fp, character_data)
+    else:
+        character_data = _extract_characters_and_scenes(
+            script_for_visuals, title, ref_style,
+        )
+        _save_character_lock(assets_dir, char_fp, character_data)
 
     done_stages.append("characters")
     _emit_progress_snapshot(done_stages, "scenes", _progress_pct(len(done_stages), 0))
@@ -2156,9 +2365,10 @@ def run_pipeline(prompt_file: str) -> None:
             _progress_pct(len(done_stages), min(0.95, 0.05 + 0.9 * frac)),
         )
 
-    # --- Phase 5: Character-consistent images ---
+    # --- Phase 5: Character-consistent images (lock block + optional prompt cache) ---
     images = step_fetch_images(
         scene_plan, assets_dir / "images",
+        character_data=character_data,
         on_image_progress=_on_img_progress,
     )
 

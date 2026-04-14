@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - development
-      - feature/development
+      - working-model-code
 
 jobs:
   deploy:
