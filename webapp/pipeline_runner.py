@@ -476,11 +476,15 @@ def _build_character_consistency_block(
     return text
 
 
-_GEMINI_REF_IMAGE_INSTRUCTION = """The FIRST attached image is the OFFICIAL CHARACTER REFERENCE for this video.
-Every illustrated scene MUST keep the same character designs: identical faces, hairstyles and colors,
-skin tones, ages, body shapes, and recurring costume details as shown in that reference.
-Match the same 2D illustrated art style. Only change pose, expression, camera angle, and background
-to fit the scene description below. Do not redesign or swap characters."""
+_GEMINI_REF_IMAGE_INSTRUCTION = """The FIRST attached image is the OFFICIAL CHARACTER REFERENCE SHEET for this video.
+
+MANDATORY RULES — violations mean the image is WRONG:
+1. Every character in this scene MUST look IDENTICAL to the reference: same face shape, same eye color,
+   same hairstyle and hair color, same skin tone, same body proportions, same clothing.
+2. Do NOT redesign, age, reshape, or recolor ANY character. Copy their look exactly.
+3. Only change: pose, expression, camera angle, and background to match the scene description.
+4. The illustration style MUST match the reference (2D illustrated, warm tones, storybook).
+5. Illustrate ONLY what the scene text literally says — no extra characters or actions."""
 
 
 def _gemini_response_first_image_b64(data: dict[str, Any]) -> tuple[str | None, str]:
@@ -1432,14 +1436,14 @@ Script:
 
 For each scene, provide a JSON array with exactly {scene_count} objects. Each object must have:
 - "narration": the exact portion of the script for this scene (1-3 sentences)
+- "narration_en": the same narration translated to English (if already English, copy it)
 - "image_prompt": A DETAILED prompt for AI image generation. CRITICAL RULES:
-  * EVERY prompt MUST start with: "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette (golden yellows, soft oranges, muted greens, warm browns), soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition."
-  * Then describe the SPECIFIC scene content after the style prefix
-  * Describe the EXACT same character appearance every time a character appears
-  * For characters: include ALL physical features (age, hair color, clothing, build, expression)
-  * For animals: describe exact species, colors, markings consistently
-  * For locations: include specific environmental details (trees, water, sky, buildings)
-  * Style reference: like Indian Tamil YouTube story channels — warm, emotional, expressive 2D illustrated art
+  * EVERY prompt MUST start with: "{IMAGE_STYLE_PREFIX}"
+  * Then describe EXACTLY what the narration text says is happening — the literal physical action, characters, and setting.
+  * Structure: "[style prefix] [which characters] [doing exactly what the narration says] [in the specific setting mentioned]"
+  * Do NOT add elements not mentioned in the narration. Do NOT use metaphors or abstract visuals.
+  * Describe the EXACT same character appearance every time — same face, hair, skin, clothes.
+- "characters_in_scene": JSON array of character names who appear in this scene (from the character list)
 - "search_query": 2-4 word search query for the scene content
 - "mood": one word describing the scene mood
 - "duration": estimated seconds this scene should be shown (match audio timing if available)
@@ -1453,6 +1457,12 @@ Respond ONLY with the JSON array."""
             try:
                 scenes = _parse_json_response(result)
                 if isinstance(scenes, list) and len(scenes) >= 2:
+                    for s in scenes:
+                        if not isinstance(s, dict):
+                            continue
+                        s.setdefault("narration_en", s.get("narration", ""))
+                        if not isinstance(s.get("characters_in_scene"), list):
+                            s["characters_in_scene"] = []
                     _log(f"Scene plan: {len(scenes)} scenes")
                     return scenes
             except (json.JSONDecodeError, ValueError) as e:
@@ -1476,7 +1486,9 @@ Respond ONLY with the JSON array."""
             query = keywords[i % len(keywords)]
         scenes.append({
             "narration": section,
-            "image_prompt": f"{IMAGE_STYLE_PREFIX}Subject: {query}. Detailed, expressive characters.",
+            "narration_en": section,
+            "characters_in_scene": [],
+            "image_prompt": f"{IMAGE_STYLE_PREFIX}Illustrate EXACTLY: {section[:150]}",
             "search_query": query,
             "mood": "cinematic",
             "duration": 6.0,
@@ -1516,7 +1528,9 @@ Script portion (scenes {start_scene+1}-{end_scene}):
 
 Create a JSON array with exactly {count_this_batch} scene objects. Each must have:
 - "narration": portion of script for this scene
-- "image_prompt": EVERY prompt MUST start with "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette, soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition." Then describe the specific scene.
+- "narration_en": same narration in English (if already English, copy it)
+- "image_prompt": MUST start with "{IMAGE_STYLE_PREFIX}" then describe EXACTLY what the narration says — literal action, characters, and setting. Structure: "[style] [which characters] [doing what the narration says] [specific setting]". No metaphors, no extra elements.
+- "characters_in_scene": array of character names appearing in this scene
 - "search_query": 2-4 word search query
 - "mood": one word mood
 - "duration": seconds (float)
@@ -1530,6 +1544,11 @@ Respond ONLY with the JSON array."""
             try:
                 scenes = _parse_json_response(result)
                 if isinstance(scenes, list):
+                    for s in scenes:
+                        if isinstance(s, dict):
+                            s.setdefault("narration_en", s.get("narration", ""))
+                            if not isinstance(s.get("characters_in_scene"), list):
+                                s["characters_in_scene"] = []
                     all_scenes.extend(scenes)
                     continue
             except (json.JSONDecodeError, ValueError) as e:
@@ -1540,7 +1559,9 @@ Respond ONLY with the JSON array."""
             narr = sentences[idx] if idx < total_sentences else f"Scene {start_scene + j + 1}"
             all_scenes.append({
                 "narration": narr,
-                "image_prompt": f"{IMAGE_STYLE_PREFIX}{narr[:100]}",
+                "narration_en": narr,
+                "characters_in_scene": [],
+                "image_prompt": f"{IMAGE_STYLE_PREFIX}Illustrate EXACTLY: {narr[:150]}",
                 "search_query": " ".join(re.findall(r"[a-zA-Z]{3,}", narr)[:3]),
                 "mood": "cinematic",
                 "duration": 8.0,
@@ -1574,7 +1595,9 @@ def step_generate_scene_plan_timeline(
             en = seg.get("text_en") or seg.get("text", "")
             fb.append({
                 "narration": seg.get("text", ""),
-                "image_prompt": f"{IMAGE_STYLE_PREFIX}{en}",
+                "narration_en": en,
+                "image_prompt": f"{IMAGE_STYLE_PREFIX}Illustrate EXACTLY this scene: {en}",
+                "characters_in_scene": [],
                 "duration": float(seg.get("duration", 4.0)),
                 "anchor_start": float(seg.get("start", 0)),
                 "anchor_end": float(seg.get("end", seg.get("start", 0) + seg.get("duration", 4.0))),
@@ -1599,18 +1622,22 @@ def step_generate_scene_plan_timeline(
 Title: {title}
 Art direction: {IMAGE_STYLE_PREFIX}{style_line}
 
-Characters (keep consistent when the same person or animal reappears):
+Characters in this story (LOCK their appearance across ALL scenes — same face, hair, skin, clothes):
 {char_snip}
 
 Timed scenes (each line has duration_sec — copy it EXACTLY into the "duration" field as a float):
 {block}
 
-Rules:
-- "narration": use the ORIG text for that scene (subtitle / spoken line).
-- "image_prompt": MUST begin with the same 2D oil-painting illustrated style wording, then describe ONLY what the EN line says is happening — literal visuals, not metaphors unrelated to the sentence.
-- "duration": must equal duration_sec from that line (float).
-- "transition": "dissolve" or "fade".
-- "search_query": 2-4 English keywords.
+STRICT RULES:
+1. "narration": use the ORIG text for that scene (subtitle / spoken line).
+2. "narration_en": copy the EN text exactly as given (do NOT paraphrase).
+3. "image_prompt": The prompt MUST illustrate EXACTLY what the EN text describes — the literal physical action, characters, and setting mentioned in that sentence. Structure it as:
+   "{IMAGE_STYLE_PREFIX}[WHICH characters from the list above appear] [doing EXACTLY what the EN text says] [in the specific setting mentioned]."
+   Do NOT add elements not in the sentence. Do NOT use metaphors or abstract visuals.
+4. "characters_in_scene": JSON array of character NAMES (from the character list) who appear in this scene. If no named character, use an empty array.
+5. "duration": must equal duration_sec from that line (float).
+6. "transition": "dissolve" or "fade".
+7. "search_query": 2-4 English keywords.
 
 Respond ONLY with the JSON array."""
 
@@ -1626,13 +1653,17 @@ Respond ONLY with the JSON array."""
                         if not isinstance(s, dict):
                             s = {}
                         dur = float(batch[j].get("duration", 4.0))
+                        en = (batch[j].get("text_en") or batch[j].get("text", ""))[:450]
                         s["duration"] = dur
                         s["anchor_start"] = float(batch[j].get("start", 0))
                         s["anchor_end"] = float(batch[j].get("end", batch[j].get("start", 0) + dur))
                         s["narration"] = s.get("narration") or batch[j].get("text", "")
+                        s["narration_en"] = en
+                        if not isinstance(s.get("characters_in_scene"), list):
+                            s["characters_in_scene"] = []
                         ip = s.get("image_prompt") or ""
                         if "2d" not in ip.lower() and "illustrat" not in ip.lower():
-                            ip = f"{IMAGE_STYLE_PREFIX}{batch[j].get('text_en', '')}"
+                            ip = f"{IMAGE_STYLE_PREFIX}Illustrate EXACTLY this scene: {en}"
                         s["image_prompt"] = ip
                         s.setdefault("transition", "dissolve")
                         s.setdefault("search_query", "story")
@@ -1819,15 +1850,45 @@ def step_fetch_images(
         else:
             _log("Character reference sheet failed — falling back to text-only consistency")
 
-    def _wrap_prompt_for_backend(raw: str) -> str:
+    def _character_excerpt_for_scene(char_names: list[str]) -> str:
+        """Pull only the character descriptions relevant to this scene from the bible."""
+        if not char_names or not character_data:
+            return ""
+        all_chars = character_data.get("characters") or []
+        name_set = {n.lower().strip() for n in char_names if n}
+        if not name_set:
+            return ""
+        lines: list[str] = []
+        for ch in all_chars:
+            if not isinstance(ch, dict):
+                continue
+            cname = (ch.get("name") or "").strip()
+            if cname.lower() in name_set:
+                desc = (ch.get("description") or "").strip().replace("\n", " ")
+                lines.append(f"• {cname}: {desc[:300]}")
+        return "\n".join(lines)
+
+    def _wrap_prompt_for_backend(raw: str, scene_chars: list[str] | None = None) -> str:
+        scene_char_block = ""
+        if scene_chars:
+            excerpt = _character_excerpt_for_scene(scene_chars)
+            if excerpt:
+                scene_char_block = (
+                    "\nCHARACTERS IN THIS SCENE (draw them EXACTLY as described — same face, "
+                    "hair, skin, clothes every time):\n"
+                    f"{excerpt}\n"
+                )
+
         if not bible_full:
-            return raw
+            return f"{scene_char_block}\n{raw}" if scene_char_block else raw
+
         if backend == "imagen" or (
             backend == "auto" and not ref_sheet_b64
         ):
             return (
                 "CHARACTER AND LOCATION CONSISTENCY (mandatory for every shot in this video):\n"
-                f"{bible_full}\n\n"
+                f"{bible_full}\n"
+                f"{scene_char_block}\n"
                 f"SCENE:\n{raw}"
             )
         if ref_sheet_b64:
@@ -1835,12 +1896,14 @@ def step_fetch_images(
             return (
                 f"{_GEMINI_REF_IMAGE_INSTRUCTION}\n\n"
                 "DESIGN LOCK (text backup — must match reference image):\n"
-                f"{backup}\n\n"
+                f"{backup}\n"
+                f"{scene_char_block}\n"
                 f"SCENE ILLUSTRATION:\n{raw}"
             )
         return (
             "CHARACTER CONSISTENCY (mandatory across all shots):\n"
-            f"{bible_full}\n\n"
+            f"{bible_full}\n"
+            f"{scene_char_block}\n"
             f"SCENE:\n{raw}"
         )
 
@@ -1868,18 +1931,30 @@ def step_fetch_images(
 
     def _one_scene(i: int, scene: dict[str, Any]) -> tuple[int, str | None]:
         out = output_dir / f"scene_{i:02d}.png"
+
+        narr_en = (scene.get("narration_en") or "").strip()
+        scene_chars = scene.get("characters_in_scene") or []
+
         image_prompt = scene.get("image_prompt", "")
         if not image_prompt:
             image_prompt = scene.get("search_query", "abstract background")
 
-        if "2d" not in image_prompt.lower() and "illustrat" not in image_prompt.lower() and "oil" not in image_prompt.lower():
+        if narr_en and narr_en.lower() not in image_prompt.lower():
+            image_prompt = (
+                f"{IMAGE_STYLE_PREFIX}"
+                f"Illustrate EXACTLY this spoken sentence: \"{narr_en}\". "
+                f"Show the literal action, characters, and setting described. "
+                f"{image_prompt}"
+            )
+        elif "2d" not in image_prompt.lower() and "illustrat" not in image_prompt.lower() and "oil" not in image_prompt.lower():
             image_prompt = f"{IMAGE_STYLE_PREFIX}{image_prompt}"
+
         if meta_extra and meta_extra.lower() not in image_prompt.lower():
             image_prompt = f"{meta_extra}{image_prompt}"
 
-        image_prompt = _wrap_prompt_for_backend(image_prompt)
+        image_prompt = _wrap_prompt_for_backend(image_prompt, scene_chars)
 
-        _log(f"Scene {i+1}/{len(scene_plan)}: queued image ({backend})")
+        _log(f"Scene {i+1}/{len(scene_plan)}: queued image ({backend}) chars={scene_chars}")
         result_path = _generate_still(image_prompt, out)
         if not result_path:
             _log(f"Scene {i+1}: image generation failed — no image obtained")
