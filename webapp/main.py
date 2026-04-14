@@ -305,7 +305,7 @@ def dashboard(request: Request):
     )
 
 
-MAX_AUDIO_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_AUDIO_SIZE = 200 * 1024 * 1024  # 200 MB (supports 20-min WAV / FLAC)
 ALLOWED_AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac"}
 
 

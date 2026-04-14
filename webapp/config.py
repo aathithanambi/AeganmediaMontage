@@ -38,7 +38,7 @@ class Settings:
     free_tier_max_duration: int = int(os.getenv("FREE_TIER_MAX_DURATION", "10"))
 
     worker_poll_seconds: int = int(os.getenv("WORKER_POLL_SECONDS", "5"))
-    worker_timeout_seconds: int = int(os.getenv("WORKER_TIMEOUT_SECONDS", "10800"))
+    worker_timeout_seconds: int = int(os.getenv("WORKER_TIMEOUT_SECONDS", "21600"))
     # command mode executes subprocess without shell; placeholders are resolved by worker.
     # supported placeholders: {pipeline}, {project_id}, {prompt_file}
     pipeline_run_command: str = os.getenv(

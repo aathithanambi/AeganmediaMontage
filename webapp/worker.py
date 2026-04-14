@@ -144,9 +144,11 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
             video_path = copied
 
     images_zip = _resolve_images_zip_path(run, stdout)
+    scenes_data = _resolve_scenes_data(stdout)
     log.info(
-        "Run %s COMPLETED | video=%s | images_zip=%s | elapsed=%.0fs",
-        run["_id"], video_path or "(none)", images_zip or "(none)", elapsed_seconds,
+        "Run %s COMPLETED | video=%s | images_zip=%s | scenes=%d | elapsed=%.0fs",
+        run["_id"], video_path or "(none)", images_zip or "(none)",
+        len((scenes_data or {}).get("scenes", [])), elapsed_seconds,
     )
 
     api_usage = _extract_api_usage(stdout)
@@ -166,6 +168,8 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
     }
     if images_zip:
         completed_update["imagesZipPath"] = images_zip
+    if scenes_data:
+        completed_update["scenesData"] = scenes_data
     if snap is not None:
         completed_update["progressSnapshot"] = snap
 
@@ -199,6 +203,17 @@ def _resolve_output_path(run: dict, stdout: str) -> str | None:
                 return raw
     fallback = Path("projects") / run["projectId"] / "renders" / "final.mp4"
     return str(fallback) if fallback.exists() else None
+
+
+def _resolve_scenes_data(stdout: str) -> dict | None:
+    """Parse OUTPUT_SCENES= JSON from pipeline stdout for DB storage."""
+    for line in stdout.splitlines():
+        if line.startswith("OUTPUT_SCENES="):
+            try:
+                return json.loads(line.split("=", 1)[1].strip())
+            except (json.JSONDecodeError, IndexError):
+                pass
+    return None
 
 
 def _resolve_images_zip_path(run: dict, stdout: str) -> str | None:
