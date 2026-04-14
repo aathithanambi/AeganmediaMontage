@@ -31,7 +31,9 @@ jobs:
         run: docker build -t aeganmediamontage-web:latest .
 
       - name: Save Docker image
-        run: docker save aeganmediamontage-web:latest -o aeganmediamontage-web.tar
+        run: |
+          docker save aeganmediamontage-web:latest -o aeganmediamontage-web.tar
+          chmod 644 aeganmediamontage-web.tar
 
       - name: Prepare remote directories
         uses: appleboy/ssh-action@v1.0.3
