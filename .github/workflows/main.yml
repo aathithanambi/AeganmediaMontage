@@ -19,11 +19,13 @@ jobs:
           [ -z "${{ secrets.HOST }}" ] && missing="$missing HOST"
           [ -z "${{ secrets.USERNAME }}" ] && missing="$missing USERNAME"
           [ -z "${{ secrets.PASSWORD }}" ] && missing="$missing PASSWORD"
+          [ -z "${{ secrets.SSH_PORT }}" ] && missing="$missing SSH_PORT"
           [ -z "${{ secrets.MONGODB_URI }}" ] && missing="$missing MONGODB_URI"
           if [ -n "$missing" ]; then
             echo "::error::Missing required secrets:$missing"
             exit 1
           fi
+          echo "SSH_PORT=${{ secrets.SSH_PORT }}"
 
       - name: Build Docker image
         run: docker build -t aeganmediamontage-web:latest .
