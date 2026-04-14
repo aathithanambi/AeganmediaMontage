@@ -27,7 +27,7 @@ jobs:
           HOST: ${{ secrets.HOST }}
           USERNAME: ${{ secrets.USERNAME }}
           PASSWORD: ${{ secrets.PASSWORD }}
-          PORT: ${{ secrets.PORT }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           MONGODB_DB: ${{ secrets.MONGODB_DB }}
@@ -40,7 +40,7 @@ jobs:
           SEED_USER_PASSWORD: ${{ secrets.SEED_USER_PASSWORD }}
         run: |
           missing=0
-          for key in HOST USERNAME PASSWORD PORT JWT_SECRET MONGODB_URI MONGODB_DB INIT_DB_ON_BOOT SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD SEED_MANAGER_EMAIL SEED_MANAGER_PASSWORD SEED_USER_EMAIL SEED_USER_PASSWORD; do
+          for key in HOST USERNAME PASSWORD SSH_PORT JWT_SECRET MONGODB_URI MONGODB_DB INIT_DB_ON_BOOT SEED_ADMIN_EMAIL SEED_ADMIN_PASSWORD SEED_MANAGER_EMAIL SEED_MANAGER_PASSWORD SEED_USER_EMAIL SEED_USER_PASSWORD; do
             val="$(printenv "$key" || true)"
             if [ -z "$val" ]; then
               echo "Missing GitHub secret: $key"
@@ -73,7 +73,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           script: |
             set -e
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage
@@ -86,7 +86,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           source: "${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar,docker/pre-deploy.sh"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/"
           overwrite: true
@@ -99,7 +99,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           script: |
             set -e
             chmod +x /home/${{ secrets.USERNAME }}/aeganmediamontage/docker/pre-deploy.sh
@@ -111,7 +111,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.PORT }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           script: |
             set -e
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage
