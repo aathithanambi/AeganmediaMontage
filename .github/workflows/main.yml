@@ -41,7 +41,13 @@ jobs:
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           script: |
+            # Clean up old tar file if exists (might be owned by different user)
+            sudo rm -f /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp/aeganmediamontage-web.tar 2>/dev/null || true
+            
+            # Create directories with proper ownership
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+            sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /home/${{ secrets.USERNAME }}/aeganmediamontage
+            chmod 755 /home/${{ secrets.USERNAME }}/aeganmediamontage
             chmod 777 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
 
       - name: Copy image to server
@@ -53,7 +59,7 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           source: "aeganmediamontage-web.tar"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
-          tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
+          overwrite: true
 
       - name: Copy deployment scripts
         uses: appleboy/scp-action@v0.1.7
