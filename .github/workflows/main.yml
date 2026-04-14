@@ -119,35 +119,35 @@ jobs:
             
             echo "Data directory: $DATA_DIR (preserved across deployments)"
 
-            # Write .env file (no leading spaces)
-            cat > $DATA_DIR/.env << 'ENVEOF'
-APP_NAME=AeganMediaMontage
-HOST=0.0.0.0
-PORT=41006
-JWT_SECRET=${{ secrets.JWT_SECRET }}
-JWT_EXP_MINUTES=1440
-MONGODB_URI=${{ secrets.MONGODB_URI }}
-MONGODB_DB=${{ secrets.MONGODB_DB }}
-VIDEOS_ROOT=/data/videos
-VIDEO_RETENTION_HOURS=48
-INIT_DB_ON_BOOT=${{ secrets.INIT_DB_ON_BOOT }}
-INIT_SEED_USERS=true
-SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}
-SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}
-SEED_MANAGER_EMAIL=${{ secrets.SEED_MANAGER_EMAIL }}
-SEED_MANAGER_PASSWORD=${{ secrets.SEED_MANAGER_PASSWORD }}
-SEED_USER_EMAIL=${{ secrets.SEED_USER_EMAIL }}
-SEED_USER_PASSWORD=${{ secrets.SEED_USER_PASSWORD }}
-PIPELINE_RUN_COMMAND=python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}
-WORKER_POLL_SECONDS=5
-WORKER_TIMEOUT_SECONDS=10800
-CREDIT_COST_PER_RUN=1
-FREE_TIER_MAX_RUNS=1
-FREE_TIER_MAX_DURATION=10
-GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-ENVEOF
-
+            # Write .env file (secrets not echoed to stdout)
+            printf '%s\n' \
+              "APP_NAME=AeganMediaMontage" \
+              "HOST=0.0.0.0" \
+              "PORT=41006" \
+              "JWT_SECRET=${{ secrets.JWT_SECRET }}" \
+              "JWT_EXP_MINUTES=1440" \
+              "MONGODB_URI=${{ secrets.MONGODB_URI }}" \
+              "MONGODB_DB=${{ secrets.MONGODB_DB }}" \
+              "VIDEOS_ROOT=/data/videos" \
+              "VIDEO_RETENTION_HOURS=48" \
+              "INIT_DB_ON_BOOT=${{ secrets.INIT_DB_ON_BOOT }}" \
+              "INIT_SEED_USERS=true" \
+              "SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}" \
+              "SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}" \
+              "SEED_MANAGER_EMAIL=${{ secrets.SEED_MANAGER_EMAIL }}" \
+              "SEED_MANAGER_PASSWORD=${{ secrets.SEED_MANAGER_PASSWORD }}" \
+              "SEED_USER_EMAIL=${{ secrets.SEED_USER_EMAIL }}" \
+              "SEED_USER_PASSWORD=${{ secrets.SEED_USER_PASSWORD }}" \
+              "PIPELINE_RUN_COMMAND=python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}" \
+              "WORKER_POLL_SECONDS=5" \
+              "WORKER_TIMEOUT_SECONDS=10800" \
+              "CREDIT_COST_PER_RUN=1" \
+              "FREE_TIER_MAX_RUNS=1" \
+              "FREE_TIER_MAX_DURATION=10" \
+              "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
+              > $DATA_DIR/.env
             chmod 600 $DATA_DIR/.env
+            echo "Environment file written (secrets masked)"
 
             # Load Docker image
             docker load -i $APP_DIR/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
