@@ -497,6 +497,35 @@ def download_run_video(request: Request, run_id: str):
     )
 
 
+@app.get("/download/run/{run_id}/images")
+def download_run_images(request: Request, run_id: str):
+    """Download the scene images zip for a pipeline run."""
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one({"_id": ObjectId(run_id)})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    zip_path_str = run.get("imagesZipPath")
+    if not zip_path_str:
+        raise HTTPException(status_code=404, detail="No images zip available for this run")
+
+    safe_path = _safe_video_path(zip_path_str)
+    if not safe_path or not safe_path.exists():
+        raise HTTPException(status_code=404, detail="Images zip not found on disk")
+
+    filename = f"{run.get('projectId', 'video')}_{run.get('title', 'output')}_images.zip"
+    filename = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+    return FileResponse(
+        path=str(safe_path),
+        media_type="application/zip",
+        filename=filename,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Run detail page + progress API + video preview
 # ---------------------------------------------------------------------------
@@ -602,12 +631,18 @@ def run_detail(request: Request, run_id: str):
         safe = _safe_video_path(run["outputVideoPath"])
         video_available = safe is not None and safe.exists()
 
+    images_zip_available = False
+    if run.get("imagesZipPath"):
+        safe_zip = _safe_video_path(run["imagesZipPath"])
+        images_zip_available = safe_zip is not None and safe_zip.exists()
+
     return templates.TemplateResponse(
         request, "run_detail.html",
         _template_context(
             request,
             run=run,
             video_available=video_available,
+            images_zip_available=images_zip_available,
             pipeline_stages=PIPELINE_STAGE_ORDER,
         ),
     )

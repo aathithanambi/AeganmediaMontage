@@ -142,9 +142,11 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
         copied = _copy_to_videos_root(raw_video_path, run["projectId"])
         if copied:
             video_path = copied
+
+    images_zip = _resolve_images_zip_path(run, stdout)
     log.info(
-        "Run %s COMPLETED | video=%s | elapsed=%.0fs",
-        run["_id"], video_path or "(none)", elapsed_seconds,
+        "Run %s COMPLETED | video=%s | images_zip=%s | elapsed=%.0fs",
+        run["_id"], video_path or "(none)", images_zip or "(none)", elapsed_seconds,
     )
 
     api_usage = _extract_api_usage(stdout)
@@ -162,6 +164,8 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
         "apiUsage": api_usage,
         "progress": 100,
     }
+    if images_zip:
+        completed_update["imagesZipPath"] = images_zip
     if snap is not None:
         completed_update["progressSnapshot"] = snap
 
@@ -177,6 +181,7 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
                 "status": "processed",
                 "videoPath": video_path,
                 "videoExists": True,
+                "imagesZipPath": images_zip,
                 "requestedBy": run.get("requestedBy"),
                 "createdAt": now,
                 "updatedAt": now,
@@ -193,6 +198,16 @@ def _resolve_output_path(run: dict, stdout: str) -> str | None:
             if raw:
                 return raw
     fallback = Path("projects") / run["projectId"] / "renders" / "final.mp4"
+    return str(fallback) if fallback.exists() else None
+
+
+def _resolve_images_zip_path(run: dict, stdout: str) -> str | None:
+    for line in stdout.splitlines():
+        if line.startswith("OUTPUT_IMAGES_ZIP="):
+            raw = line.split("=", 1)[1].strip()
+            if raw and Path(raw).exists():
+                return raw
+    fallback = Path("projects") / run["projectId"] / "renders" / "scene_images.zip"
     return str(fallback) if fallback.exists() else None
 
 

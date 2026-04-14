@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import zipfile
 import sys
 import textwrap
 import threading
@@ -844,16 +845,26 @@ IMAGE_STYLE_PREFIX = (
     "storybook quality, 16:9 wide cinematic composition. "
 )
 
-def _analyze_reference_style(ref_summary: str) -> dict[str, str]:
-    """Use Gemini to identify the visual art style, image type, and editing approach."""
+def _analyze_reference_style(
+    ref_summary: str,
+    style_notes: str = "",
+) -> dict[str, str]:
+    """Use Gemini to identify visual style from the reference video; blend optional user style notes."""
     if not _google_available() or not ref_summary:
         return dict(DEFAULT_STYLE)
+
+    notes_block = ""
+    if style_notes.strip():
+        notes_block = (
+            "\nUser style instructions from their prompt (honor these when consistent with the reference):\n"
+            f"{style_notes.strip()[:500]}\n"
+        )
 
     llm_prompt = f"""Analyze this reference video and identify its visual style.
 
 Reference video analysis:
 {ref_summary[:800]}
-
+{notes_block}
 Return a JSON object:
 - "art_style": Describe the visual art style (e.g. "oil painting", "watercolor illustration", "realistic photography", "anime/cartoon", "3D render", "vintage film", "minimalist flat design")
 - "image_type": What type of images are used (e.g. "original photos", "AI-generated illustrations", "hand-drawn art", "stock footage stills", "mixed media")
@@ -1014,10 +1025,18 @@ def _env_truthy(name: str, default: bool = True) -> bool:
 
 
 def _character_lock_fingerprint(
-    script_for_visuals: str, title: str, art_style: str,
+    script_for_visuals: str,
+    title: str,
+    art_style: str,
+    *,
+    creator_topic: str = "",
+    style_notes: str = "",
 ) -> str:
     """Stable hash so we can reuse character extraction + outfit locks across re-runs."""
-    blob = f"{title}\n{art_style}\n{script_for_visuals[:12000]}"
+    blob = (
+        f"{title}\n{art_style}\n{creator_topic[:4000]}\n{style_notes[:1500]}\n"
+        f"{script_for_visuals[:12000]}"
+    )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -1097,10 +1116,10 @@ def _build_character_lock_block(
         return ""
     lines: list[str] = [
         "SERIES CHARACTER LOCK — obey in EVERY frame:",
-        "• Keep the SAME face, hair, skin tone, age, and body type for each named character.",
+        "• Keep the SAME face, hair, skin color, age, and body type for each named character.",
         "• Keep the SAME signature outfit and the SAME main garment colors unless the narration "
         "explicitly says they changed clothes.",
-        "• Do NOT recolor outfits, swap palette, or invent new costumes between scenes.",
+        "• Do NOT recolor skin, outfits, swap palette, or invent new costumes between scenes.",
         "",
         "LOCKED CAST:",
     ]
@@ -1111,12 +1130,15 @@ def _build_character_lock_block(
         role = (ch.get("role") or "").strip()
         desc = (ch.get("description") or "").strip().replace("\n", " ")
         outfit = (ch.get("signature_outfit") or "").strip()
+        skin = (ch.get("skin_color") or "").strip()
         colors = ch.get("main_colors") or []
         color_line = ", ".join(str(c) for c in colors[:10]) if colors else ""
         bit = f"• {name}"
         if role:
             bit += f" ({role})"
         lines.append(bit + ":")
+        if skin:
+            lines.append(f"  SKIN COLOR (never change): {skin}")
         if color_line:
             lines.append(f"  MAIN COLORS (fixed): {color_line}")
         if outfit:
@@ -1149,7 +1171,11 @@ def _build_character_lock_block(
 # ---------------------------------------------------------------------------
 
 def _extract_characters_and_scenes(
-    transcript: str, title: str, ref_style: dict[str, str]
+    transcript: str,
+    title: str,
+    ref_style: dict[str, str],
+    *,
+    creator_topic: str = "",
 ) -> dict[str, Any]:
     """Identify characters, locations, and scene descriptions from the transcript."""
     if not _google_available():
@@ -1158,19 +1184,27 @@ def _extract_characters_and_scenes(
     art_style = ref_style.get("art_style", "realistic")
     image_type = ref_style.get("image_type", "AI-generated")
 
+    topic_block = ""
+    if creator_topic.strip():
+        topic_block = (
+            f"\nCreator topic / intent (from the user's prompt — keep characters and story aligned with this):\n"
+            f"{creator_topic.strip()[:1200]}\n"
+        )
+
     llm_prompt = f"""Analyze this story/narration transcript and extract characters and scenes.
 
 Title: {title}
-Art style to use: {art_style}
+Art style to use (from reference video when provided, else default): {art_style}
 Image type: {image_type}
-
+{topic_block}
 Transcript:
 {transcript[:3000]}
 
 Return a JSON object with:
 - "characters": Array of character objects, each with:
   - "name": character name
-  - "description": detailed visual description (age, gender, face shape, hair style and color, skin tone, build, distinguishing marks)
+  - "description": detailed visual description (age, gender, face shape, hair style and color, skin tone/complexion, build, distinguishing marks)
+  - "skin_color": exact skin complexion name (e.g. "warm brown", "fair olive", "dark ebony") — MUST stay identical in every frame
   - "role": their role in the story (protagonist, friend, narrator, etc.)
   - "signature_outfit": ONE concise sentence naming the default costume with EXACT garment types and their MAIN colors
  (e.g. "crimson cotton kurta, white dhoti, brown leather sandals"). This outfit repeats in every scene unless the story says they changed.
@@ -1305,21 +1339,31 @@ def step_generate_scene_plan(
     character_data: dict[str, Any] | None = None,
     scene_count: int = 6,
     sentence_timings: list[dict[str, Any]] | None = None,
+    *,
+    style_notes: str = "",
 ) -> list[dict[str, Any]]:
     if _google_available():
         ref_context = ""
         if ref_summary:
-            ref_context = f"\nReference video style to match:\n{ref_summary[:400]}\n"
+            ref_context = (
+                "\nReference video — match its visual style, pacing, and composition feel:\n"
+                f"{ref_summary[:400]}\n"
+            )
 
         style_context = ""
         if ref_style:
             style_context = f"""
-Visual style requirements:
+Visual style (from reference video analysis when a URL was provided; otherwise defaults):
 - Art style: {ref_style.get('art_style', 'realistic')}
 - Image type: {ref_style.get('image_type', 'AI-generated')}
 - Color palette: {ref_style.get('color_palette', 'natural')}
 - Mood: {ref_style.get('mood', 'professional')}
 """
+        if style_notes.strip():
+            style_context += (
+                f"\nUser style instructions from their prompt (honor alongside the above):\n"
+                f"{style_notes.strip()[:500]}\n"
+            )
 
         char_context = ""
         if character_data and character_data.get("characters"):
@@ -1329,17 +1373,20 @@ Visual style requirements:
                     continue
                 nm = ch.get("name", "Unknown")
                 outfit = (ch.get("signature_outfit") or "").strip()
+                skin = (ch.get("skin_color") or "").strip()
                 cols = ch.get("main_colors") or []
                 col_txt = ", ".join(str(c) for c in cols[:8]) if cols else ""
                 desc = ch.get("description", "No description")
                 extra = ""
+                if skin:
+                    extra += f" [LOCK skin: {skin}]"
                 if col_txt:
                     extra += f" [LOCK colors: {col_txt}]"
                 if outfit:
                     extra += f" [LOCK outfit: {outfit}]"
                 char_descs.append(f"  - {nm}: {desc}{extra}")
             char_context = (
-                "\nCharacters (same face + outfit + main colors in every scene):\n"
+                "\nCharacters (same face + skin color + outfit + main colors in every scene):\n"
                 + "\n".join(char_descs) + "\n"
             )
 
@@ -1366,7 +1413,7 @@ Visual style requirements:
         llm_prompt = f"""You are a video scene planner. Break this narration script into {scene_count} visual scenes.
 
 Title: {title}
-Topic: {prompt[:200]}
+Topic / creator intent (user prompt): {prompt[:500]}
 {ref_context}{style_context}{char_context}{timing_context}
 Script:
 {script[:2000]}
@@ -1497,12 +1544,17 @@ def step_generate_scene_plan_timeline(
     character_data: dict[str, Any],
     ref_style: dict[str, str],
     title: str,
+    *,
+    creator_topic: str = "",
+    style_notes: str = "",
 ) -> list[dict[str, Any]]:
     """Build one scene per timed segment: durations match audio; image prompts from English story text."""
     if not segments:
         return []
 
     style_line = ref_style.get("art_style", DEFAULT_STYLE["art_style"])
+    palette = ref_style.get("color_palette", DEFAULT_STYLE["color_palette"])
+    mood = ref_style.get("mood", DEFAULT_STYLE["mood"])
     try:
         char_snip = json.dumps(character_data.get("characters", [])[:12], ensure_ascii=True)
     except (TypeError, ValueError):
@@ -1533,11 +1585,23 @@ def step_generate_scene_plan_timeline(
                 f"Scene {base_idx + j + 1} | duration_sec={dur:.3f} | EN: {en} | ORIG: {orig}"
             )
         block = "\n".join(lines)
+        topic_ctx = ""
+        if creator_topic.strip():
+            topic_ctx = (
+                f"\nCreator topic / intent (user prompt — use for overall subject, tone, and setting; "
+                f"each scene's action must still match its EN line):\n{creator_topic.strip()[:1200]}\n"
+            )
+        notes_ctx = ""
+        if style_notes.strip():
+            notes_ctx = (
+                f"\nUser style notes from prompt:\n{style_notes.strip()[:600]}\n"
+            )
         prompt = f"""You create still-image scenes for a narrated video. Return a JSON array of EXACTLY {len(batch)} objects, same order as the lines below.
 
 Title: {title}
-Art direction: {IMAGE_STYLE_PREFIX}{style_line}
-
+Visual style from reference video (match this look): art_style={style_line}; color_palette={palette}; mood={mood}.
+Base rendering: {IMAGE_STYLE_PREFIX}
+{topic_ctx}{notes_ctx}
 Characters (keep face, signature_outfit, and main_colors IDENTICAL whenever the same person appears):
 {char_snip}
 
@@ -1881,15 +1945,22 @@ def step_compose_slideshow(
             except (ValueError, TypeError):
                 durations.append(max(floor_dur, 6.0))
 
+    audio_total: float = 0.0
     if audio_path and Path(audio_path).exists():
-        total_dur = _probe_duration(audio_path)
-        if total_dur > 0:
-            if not durations or abs(sum(durations) - total_dur) > total_dur * 0.3:
-                per_image = max(floor_dur, total_dur / len(images))
+        audio_total = _probe_duration(audio_path)
+        if audio_total > 0:
+            if not durations or abs(sum(durations) - audio_total) > audio_total * 0.3:
+                per_image = max(floor_dur, audio_total / len(images))
                 durations = [per_image] * len(images)
             else:
-                ratio = total_dur / sum(durations) if sum(durations) > 0 else 1.0
+                ratio = audio_total / sum(durations) if sum(durations) > 0 else 1.0
                 durations = [d * ratio for d in durations]
+
+            # Force exact match: adjust last segment so sum == audio duration
+            gap = audio_total - sum(durations)
+            if abs(gap) > 0.01 and durations:
+                durations[-1] = max(floor_dur, durations[-1] + gap)
+            _log(f"Audio-synced durations: sum={sum(durations):.3f}s audio={audio_total:.3f}s  ({len(durations)} segs)")
 
     while len(durations) < len(images):
         durations.append(6.0)
@@ -2082,10 +2153,10 @@ def _verify_output(
         audio_dur = _probe_duration(audio_path)
         result["audio_duration"] = audio_dur
         diff = abs(video_dur - audio_dur)
-        if diff > audio_dur * 0.2 and diff > 5:
-            result["checks"].append(f"WARN: Video/audio duration mismatch (video={video_dur:.1f}s, audio={audio_dur:.1f}s)")
+        if diff > 2.0:
+            result["checks"].append(f"WARN: Video/audio duration mismatch (video={video_dur:.1f}s, audio={audio_dur:.1f}s, diff={diff:.1f}s)")
         else:
-            result["checks"].append(f"OK: Audio/video sync within tolerance")
+            result["checks"].append(f"OK: Audio/video sync (video={video_dur:.1f}s, audio={audio_dur:.1f}s, diff={diff:.1f}s)")
 
     file_size = Path(video_path).stat().st_size / (1024 * 1024)
     result["file_size_mb"] = round(file_size, 1)
@@ -2103,16 +2174,39 @@ def _verify_output(
     return result
 
 
+def _zip_scene_images(images: list[str], renders_dir: Path) -> str | None:
+    """Create a zip of all scene images in the renders directory."""
+    if not images:
+        return None
+    zip_path = renders_dir / "scene_images.zip"
+    try:
+        with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, img_path in enumerate(images):
+                p = Path(img_path)
+                if p.exists():
+                    ext = p.suffix or ".png"
+                    zf.write(str(p), f"scene_{i + 1:03d}{ext}")
+        if zip_path.exists() and zip_path.stat().st_size > 0:
+            _log(f"Scene images zipped: {zip_path} ({zip_path.stat().st_size / 1024:.0f} KB, {len(images)} images)")
+            return str(zip_path)
+    except Exception as e:
+        _log(f"Failed to zip images: {e}")
+    return None
+
+
+def _copy_images_to_renders(images: list[str], renders_dir: Path) -> None:
+    """Copy scene images into renders/images/ so they live alongside the video."""
+    dest = renders_dir / "images"
+    dest.mkdir(parents=True, exist_ok=True)
+    for i, img_path in enumerate(images):
+        p = Path(img_path)
+        if p.exists():
+            ext = p.suffix or ".png"
+            shutil.copy2(str(p), str(dest / f"scene_{i + 1:03d}{ext}"))
+
+
 def _cleanup_intermediate_assets(project_dir: Path) -> None:
-    """Remove heavy intermediates after final.mp4 succeeds (keeps prompts, final render)."""
-    img_dir = project_dir / "assets" / "images"
-    if img_dir.is_dir():
-        for p in img_dir.iterdir():
-            try:
-                if p.is_file():
-                    p.unlink()
-            except OSError as e:
-                _log(f"Cleanup skip {p}: {e}")
+    """Remove heavy intermediates (keeps renders/ with video, images, and zip)."""
     assets = project_dir / "assets"
     if assets.is_dir():
         for p in assets.glob("tts_chunk_*.mp3"):
@@ -2127,6 +2221,14 @@ def _cleanup_intermediate_assets(project_dir: Path) -> None:
                     tp.unlink()
                 except OSError:
                     pass
+    img_dir = project_dir / "assets" / "images"
+    if img_dir.is_dir():
+        for p in img_dir.iterdir():
+            try:
+                if p.is_file():
+                    p.unlink()
+            except OSError as e:
+                _log(f"Cleanup skip {p}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -2196,19 +2298,20 @@ def run_pipeline(prompt_file: str) -> None:
             ref_summary = _summarize_reference(analysis)
             _log(f"Reference summary:\n{ref_summary[:300]}...")
 
-    # --- Phase 0b: Reference style analysis ---
-    ref_style = _analyze_reference_style(ref_summary or "")
-
     done_stages.append("reference")
     _emit_progress_snapshot(done_stages, "transcribe", _progress_pct(len(done_stages), 0))
 
     # --- Phase 1: Parse production intent ---
     intent = _parse_production_intent(raw_prompt, ref_summary)
     content_prompt = intent["content_prompt"]
+    style_notes = str(intent.get("style_notes") or "").strip()
     audio_lang = form_audio_lang or intent["audio_language"]
     subtitle_lang = form_subtitle_lang or intent["subtitle_language"]
     target_dur = intent["target_duration"]
     reference_driven = intent["reference_driven"]
+
+    # Visual style: reference video analysis + optional user style notes from prompt
+    ref_style = _analyze_reference_style(ref_summary or "", style_notes)
 
     if audio_lang not in SUPPORTED_LANGUAGES and audio_lang != "english":
         audio_lang = "english"
@@ -2281,7 +2384,11 @@ def run_pipeline(prompt_file: str) -> None:
 
     # --- Phase 2b: Character & scene extraction (cached by transcript fingerprint) ---
     char_fp = _character_lock_fingerprint(
-        script_for_visuals, title, str(ref_style.get("art_style", "")),
+        script_for_visuals,
+        title,
+        str(ref_style.get("art_style", "")),
+        creator_topic=content_prompt,
+        style_notes=style_notes,
     )
     if _env_truthy("CHARACTER_CACHE", True):
         cached_chars = _load_character_lock(assets_dir, char_fp)
@@ -2289,12 +2396,12 @@ def run_pipeline(prompt_file: str) -> None:
             character_data = _normalize_character_entries(dict(cached_chars))
         else:
             character_data = _extract_characters_and_scenes(
-                script_for_visuals, title, ref_style,
+                script_for_visuals, title, ref_style, creator_topic=content_prompt,
             )
             _save_character_lock(assets_dir, char_fp, character_data)
     else:
         character_data = _extract_characters_and_scenes(
-            script_for_visuals, title, ref_style,
+            script_for_visuals, title, ref_style, creator_topic=content_prompt,
         )
         _save_character_lock(assets_dir, char_fp, character_data)
 
@@ -2304,7 +2411,12 @@ def run_pipeline(prompt_file: str) -> None:
     # --- Phase 3: Scene plan with character consistency ---
     if merged_timings:
         scene_plan = step_generate_scene_plan_timeline(
-            merged_timings, character_data, ref_style, title,
+            merged_timings,
+            character_data,
+            ref_style,
+            title,
+            creator_topic=content_prompt,
+            style_notes=style_notes,
         )
     else:
         # Scale scene count based on duration: ~1 scene per 8s for short, per 25s for long videos
@@ -2320,6 +2432,7 @@ def run_pipeline(prompt_file: str) -> None:
             character_data=character_data,
             scene_count=scene_count,
             sentence_timings=sentence_timings if sentence_timings else None,
+            style_notes=style_notes,
         )
     done_stages.append("scenes")
     _emit_progress_snapshot(done_stages, "subtitles", _progress_pct(len(done_stages), 0))
@@ -2387,6 +2500,12 @@ def run_pipeline(prompt_file: str) -> None:
             )
             if placeholder.exists():
                 images.append(str(placeholder))
+
+    # Copy images + create zip inside renders/ for download
+    _copy_images_to_renders(images, renders_dir)
+    images_zip_path = _zip_scene_images(images, renders_dir)
+    if images_zip_path:
+        print(f"OUTPUT_IMAGES_ZIP={images_zip_path}")
 
     done_stages.append("images")
     _emit_progress_snapshot(done_stages, "compose", _progress_pct(len(done_stages), 0))
