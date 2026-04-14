@@ -37,7 +37,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.SSH_PORT || 22 }}
+          port: ${{ secrets.SSH_PORT }}
           script: |
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
             chmod 777 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
@@ -48,7 +48,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.SSH_PORT || 22 }}
+          port: ${{ secrets.SSH_PORT }}
           source: "aeganmediamontage-web.tar"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
           tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
@@ -59,7 +59,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.SSH_PORT || 22 }}
+          port: ${{ secrets.SSH_PORT }}
           source: "docker/"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage"
 
@@ -69,7 +69,7 @@ jobs:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
-          port: ${{ secrets.SSH_PORT || 22 }}
+          port: ${{ secrets.SSH_PORT }}
           command_timeout: 30m
           script: |
             set -e
