@@ -162,6 +162,59 @@ def _merge_timings_for_budget(
     return merged
 
 
+def _group_words_into_beats(
+    words: list[dict[str, Any]],
+    max_beat_sec: float = 6.0,
+    min_beat_sec: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Group word-level timestamps into visual beats.
+
+    Each beat becomes one image in the video. Beats break on:
+    - sentence-ending punctuation (. ! ?)
+    - accumulated duration exceeding *max_beat_sec*
+    """
+    if not words:
+        return []
+
+    beats: list[dict[str, Any]] = []
+    buf_words: list[str] = []
+    beat_start = float(words[0].get("start", 0))
+
+    for w in words:
+        word_text = (w.get("word") or w.get("text") or "").strip()
+        if not word_text:
+            continue
+        w_end = float(w.get("end", w.get("start", beat_start) + 0.1))
+        buf_words.append(word_text)
+        elapsed = w_end - beat_start
+
+        is_sentence_end = word_text.rstrip().endswith((".", "!", "?", "。", "?", "!"))
+        time_over = elapsed >= max_beat_sec
+
+        if (is_sentence_end and elapsed >= min_beat_sec) or time_over:
+            beats.append({
+                "start": round(beat_start, 3),
+                "end": round(w_end, 3),
+                "duration": round(w_end - beat_start, 3),
+                "text": " ".join(buf_words),
+                "text_en": "",
+            })
+            buf_words = []
+            beat_start = w_end
+
+    if buf_words:
+        last_end = float(words[-1].get("end", words[-1].get("start", beat_start) + 0.5))
+        beats.append({
+            "start": round(beat_start, 3),
+            "end": round(last_end, 3),
+            "duration": round(max(0.15, last_end - beat_start), 3),
+            "text": " ".join(buf_words),
+            "text_en": "",
+        })
+
+    return beats
+
+
 def _add_english_to_timings(timings: list[dict[str, Any]], source_lang: str) -> list[dict[str, Any]]:
     """Add text_en per segment for image/scene planning (Imagen prompts in English)."""
     if not timings:
@@ -1048,12 +1101,16 @@ def step_transcribe_audio(audio_path: str, language: str = "english") -> str | N
 
 
 def _transcribe_with_timestamps(audio_path: str, language: str = "english") -> list[dict[str, Any]]:
-    """Transcribe audio and estimate per-sentence timing using Gemini."""
+    """Transcribe audio with word-level timing via Gemini, then group into visual beats.
+
+    Returns a list of timed segments (beats) with precise start/end anchored to
+    word boundaries.  Falls back to sentence-level if word-level fails.
+    """
     api_key = _google_api_key()
     if not api_key:
         return []
 
-    _log("Extracting sentence-level timestamps via Gemini...")
+    _log("Extracting word-level timestamps via Gemini...")
     try:
         with open(audio_path, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -1067,6 +1124,30 @@ def _transcribe_with_timestamps(audio_path: str, language: str = "english") -> l
 
         multimodal_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
         resp = None
+
+        word_prompt = f"""Transcribe this {language} audio WORD BY WORD with precise timestamps.
+
+Return a JSON array where EACH element is ONE word:
+- "word": the spoken word (string)
+- "start": when the word begins in seconds (float, e.g. 0.42)
+- "end": when the word ends in seconds (float, e.g. 0.71)
+
+Include punctuation attached to the word (e.g. "hello," or "world.").
+Be as precise as possible — measure from the waveform, do not guess.
+Respond ONLY with the JSON array, no markdown."""
+
+        sentence_prompt = f"""Transcribe this {language} audio sentence by sentence.
+For each sentence, estimate its start and end time in seconds.
+
+Return a JSON array where each element has:
+- "text": the transcribed sentence
+- "start": start time in seconds (float)
+- "end": end time in seconds (float)
+- "duration": duration in seconds (float)
+
+Be as accurate as possible with timing. Group words into natural sentences.
+Respond ONLY with the JSON array."""
+
         for mm_model in multimodal_models:
             gemini_url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -1077,24 +1158,55 @@ def _transcribe_with_timestamps(audio_path: str, language: str = "english") -> l
                 "contents": [{
                     "parts": [
                         {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
-                        {"text": f"""Transcribe this {language} audio sentence by sentence.
-For each sentence, estimate its start and end time in seconds.
+                        {"text": word_prompt},
+                    ]
+                }],
+                "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.1},
+            }
+            resp = requests.post(gemini_url, json=body, timeout=180)
+            if resp.status_code == 404:
+                _log(f"Timestamp model {mm_model} not found, trying next")
+                continue
+            break
 
-Return a JSON array where each element has:
-- "text": the transcribed sentence
-- "start": start time in seconds (float)
-- "end": end time in seconds (float)
-- "duration": duration in seconds (float)
+        if resp and resp.status_code == 200:
+            data = resp.json()
+            _track_api("gemini", cost_estimate=0.002)
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            parsed = _parse_json_response(text)
+            if isinstance(parsed, list) and len(parsed) >= 3:
+                has_word_key = all(
+                    ("word" in w or "text" in w) and "start" in w
+                    for w in parsed[:5]
+                )
+                if has_word_key and "word" in parsed[0]:
+                    beats = _group_words_into_beats(parsed)
+                    if beats:
+                        _log(f"Word-level timestamps: {len(parsed)} words → {len(beats)} visual beats")
+                        return beats
 
-Be as accurate as possible with timing. Group words into natural sentences.
-Respond ONLY with the JSON array."""},
+                if all("text" in s and "start" in s for s in parsed[:3]):
+                    _log(f"Sentence-level timestamps extracted: {len(parsed)} sentences")
+                    return parsed
+
+        _log("Word-level transcription failed — falling back to sentence-level...")
+        for mm_model in multimodal_models:
+            gemini_url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{mm_model}:generateContent"
+                f"?key={api_key}"
+            )
+            body = {
+                "contents": [{
+                    "parts": [
+                        {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
+                        {"text": sentence_prompt},
                     ]
                 }],
                 "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.1},
             }
             resp = requests.post(gemini_url, json=body, timeout=120)
             if resp.status_code == 404:
-                _log(f"Timestamp model {mm_model} not found, trying next")
                 continue
             break
         if resp and resp.status_code == 200:
@@ -1464,6 +1576,8 @@ def step_generate_scene_plan_timeline(
                 "narration": seg.get("text", ""),
                 "image_prompt": f"{IMAGE_STYLE_PREFIX}{en}",
                 "duration": float(seg.get("duration", 4.0)),
+                "anchor_start": float(seg.get("start", 0)),
+                "anchor_end": float(seg.get("end", seg.get("start", 0) + seg.get("duration", 4.0))),
                 "transition": "dissolve",
                 "search_query": " ".join(re.findall(r"[a-zA-Z]{3,}", en)[:4]) or "story scene",
                 "mood": "cinematic",
@@ -1513,6 +1627,8 @@ Respond ONLY with the JSON array."""
                             s = {}
                         dur = float(batch[j].get("duration", 4.0))
                         s["duration"] = dur
+                        s["anchor_start"] = float(batch[j].get("start", 0))
+                        s["anchor_end"] = float(batch[j].get("end", batch[j].get("start", 0) + dur))
                         s["narration"] = s.get("narration") or batch[j].get("text", "")
                         ip = s.get("image_prompt") or ""
                         if "2d" not in ip.lower() and "illustrat" not in ip.lower():
@@ -2081,20 +2197,44 @@ def step_compose_slideshow(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     W, H, FPS = 1920, 1080, 30
-    FADE_DUR = 1.0
 
     floor_dur = max(0.12, float(min_scene_duration))
-    durations: list[float] = []
-    if scene_plan:
-        for s in scene_plan:
-            d = s.get("duration", 6.0)
-            try:
-                durations.append(max(floor_dur, float(d)))
-            except (ValueError, TypeError):
-                durations.append(max(floor_dur, 6.0))
 
+    has_anchors = bool(
+        scene_plan
+        and len(scene_plan) >= 2
+        and scene_plan[0].get("anchor_start") is not None
+    )
+
+    total_dur = 0.0
     if audio_path and Path(audio_path).exists():
         total_dur = _probe_duration(audio_path)
+
+    durations: list[float] = []
+
+    if has_anchors and total_dur > 0:
+        FADE_DUR = 0.25
+        _log("Anchor-based timing: image cuts pinned to audio word boundaries (crossfade=0.25s)")
+        anchors = [float(s.get("anchor_start", 0)) for s in scene_plan]
+        for i in range(len(scene_plan)):
+            if i + 1 < len(scene_plan):
+                d = anchors[i + 1] - anchors[i]
+            else:
+                d = total_dur - anchors[i]
+            durations.append(max(floor_dur, d))
+        residual = total_dur - sum(durations)
+        if abs(residual) > 0.05:
+            durations[-1] = max(floor_dur, durations[-1] + residual)
+    else:
+        FADE_DUR = 1.0
+        if scene_plan:
+            for s in scene_plan:
+                d = s.get("duration", 6.0)
+                try:
+                    durations.append(max(floor_dur, float(d)))
+                except (ValueError, TypeError):
+                    durations.append(max(floor_dur, 6.0))
+
         if total_dur > 0:
             if not durations or abs(sum(durations) - total_dur) > total_dur * 0.3:
                 per_image = max(floor_dur, total_dur / len(images))
@@ -2531,9 +2671,11 @@ def run_pipeline(prompt_file: str) -> None:
     done_stages.append("scenes")
     _emit_progress_snapshot(done_stages, "subtitles", _progress_pct(len(done_stages), 0))
 
-    _log(f"Scene plan: {len(scene_plan)} scenes")
+    anchored = bool(scene_plan and scene_plan[0].get("anchor_start") is not None)
+    _log(f"Scene plan: {len(scene_plan)} scenes (anchor-timed={anchored})")
     for i, s in enumerate(scene_plan):
-        _log(f"  Scene {i+1}: mood={s.get('mood', '?')} dur={s.get('duration', '?')}s trans={s.get('transition', '?')}")
+        anchor = f" @{s['anchor_start']:.2f}s" if s.get("anchor_start") is not None else ""
+        _log(f"  Scene {i+1}: dur={s.get('duration', '?')}s{anchor} trans={s.get('transition', '?')}")
 
     narration_sections = [s.get("narration", "") for s in scene_plan]
 
