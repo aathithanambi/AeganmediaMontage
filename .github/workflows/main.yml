@@ -25,7 +25,7 @@ jobs:
             echo "::error::Missing required secrets:$missing"
             exit 1
           fi
-          echo "SSH_PORT=${{ secrets.SSH_PORT }}"
+          echo "Using SSH port: ${{ secrets.SSH_PORT }}"
 
       - name: Build Docker image
         run: docker build -t aeganmediamontage-web:latest .
@@ -41,16 +41,21 @@ jobs:
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           script: |
-            # Clean up old tar file if exists (might be owned by different user)
-            sudo rm -f /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp/aeganmediamontage-web.tar 2>/dev/null || true
+            # Clean up any old files with permission issues
+            sudo rm -rf /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp 2>/dev/null || true
+            sudo rm -rf /home/${{ secrets.USERNAME }}/aeganmediamontage/docker 2>/dev/null || true
             
-            # Create directories with proper ownership
+            # Create fresh directories
             mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/docker
+            
+            # Ensure proper ownership
             sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /home/${{ secrets.USERNAME }}/aeganmediamontage
             chmod 755 /home/${{ secrets.USERNAME }}/aeganmediamontage
             chmod 777 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+            chmod 755 /home/${{ secrets.USERNAME }}/aeganmediamontage/docker
 
-      - name: Copy image to server
+      - name: Copy Docker image to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
@@ -59,7 +64,6 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           source: "aeganmediamontage-web.tar"
           target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
-          overwrite: true
 
       - name: Copy deployment scripts
         uses: appleboy/scp-action@v0.1.7
@@ -83,8 +87,13 @@ jobs:
             set -e
             cd /home/${{ secrets.USERNAME }}/aeganmediamontage
 
-            # Write .env
-            cat <<'ENVEOF' > /var/aeganmediamontage/.env
+            # Create app directories
+            sudo mkdir -p /var/aeganmediamontage/videos
+            sudo mkdir -p /var/aeganmediamontage/projects
+            sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /var/aeganmediamontage
+
+            # Write .env file (no leading spaces)
+            cat > /var/aeganmediamontage/.env << 'ENVEOF'
             APP_NAME=AeganMediaMontage
             HOST=0.0.0.0
             PORT=41006
@@ -111,17 +120,16 @@ jobs:
             WORKER_TIMEOUT_SECONDS=10800
             ENVEOF
 
-            # Pre-deploy cleanup
+            # Remove leading spaces from .env file (fix YAML indentation issue)
+            sed -i 's/^[[:space:]]*//' /var/aeganmediamontage/.env
+
+            # Pre-deploy cleanup (stop old containers)
             chmod +x docker/pre-deploy.sh
             bash docker/pre-deploy.sh
 
             # Load new image
             docker load -i tmp/aeganmediamontage-web.tar
             rm -f tmp/aeganmediamontage-web.tar
-
-            # Create shared directories
-            mkdir -p /var/aeganmediamontage/videos
-            mkdir -p /var/aeganmediamontage/projects
 
             # Run web app (exposed on 41006 for your external Nginx to proxy)
             docker run -d \
