@@ -1,61 +1,70 @@
 name: Deploy AeganMedia Montage
 
 on:
-  push:
-    branches: [main, feature/development]
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - feature/development
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    name: Build and Deploy Containers
+    runs-on: ubuntu-22.04
     environment: development
+    env:
+      APP_IMAGE: aeganmediamontage-web
+      IMAGE_TAG: ${{ github.run_number }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate secrets
+      - name: Validate required GitHub secrets
+        env:
+          HOST_SECRET: ${{ secrets.HOST }}
+          USERNAME_SECRET: ${{ secrets.USERNAME }}
+          PASSWORD_SECRET: ${{ secrets.PASSWORD }}
+          PORT_SECRET: ${{ secrets.SSH_PORT }}
+          MONGODB_SECRET: ${{ secrets.MONGODB_URI }}
         run: |
-          missing=""
-          [ -z "${{ secrets.HOST }}" ] && missing="$missing HOST"
-          [ -z "${{ secrets.USERNAME }}" ] && missing="$missing USERNAME"
-          [ -z "${{ secrets.PASSWORD }}" ] && missing="$missing PASSWORD"
-          [ -z "${{ secrets.SSH_PORT }}" ] && missing="$missing SSH_PORT"
-          [ -z "${{ secrets.MONGODB_URI }}" ] && missing="$missing MONGODB_URI"
-          if [ -n "$missing" ]; then
-            echo "::error::Missing required secrets:$missing"
+          missing=0
+          [ -z "$HOST_SECRET" ] && echo "Missing GitHub secret: HOST" && missing=1
+          [ -z "$USERNAME_SECRET" ] && echo "Missing GitHub secret: USERNAME" && missing=1
+          [ -z "$PASSWORD_SECRET" ] && echo "Missing GitHub secret: PASSWORD" && missing=1
+          [ -z "$PORT_SECRET" ] && echo "Missing GitHub secret: SSH_PORT" && missing=1
+          [ -z "$MONGODB_SECRET" ] && echo "Missing GitHub secret: MONGODB_URI" && missing=1
+          if [ "$missing" -ne 0 ]; then
+            echo "Please configure deployment connection secrets in the 'development' environment."
             exit 1
           fi
-          echo "Using SSH port: ${{ secrets.SSH_PORT }}"
 
       - name: Build Docker image
-        run: docker build -t aeganmediamontage-web:latest .
+        run: docker build -t ${APP_IMAGE}:${IMAGE_TAG} .
 
-      - name: Save Docker image
+      - name: Export Docker image tar
         run: |
-          docker save aeganmediamontage-web:latest -o aeganmediamontage-web.tar
-          chmod 644 aeganmediamontage-web.tar
+          docker save -o ${APP_IMAGE}-${IMAGE_TAG}.tar ${APP_IMAGE}:${IMAGE_TAG}
+          chmod 644 ${APP_IMAGE}-${IMAGE_TAG}.tar
 
-      - name: Prepare remote directories
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Verify tar file
+        run: |
+          ls -l ${APP_IMAGE}-${IMAGE_TAG}.tar
+          test -r ${APP_IMAGE}-${IMAGE_TAG}.tar
+
+      - name: Prepare remote upload directory
+        uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           script: |
-            # Clean up any old files with permission issues
-            sudo rm -rf /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp 2>/dev/null || true
-            sudo rm -rf /home/${{ secrets.USERNAME }}/aeganmediamontage/docker 2>/dev/null || true
-            
-            # Create fresh directories
-            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
-            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/docker
-            
-            # Ensure proper ownership
-            sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /home/${{ secrets.USERNAME }}/aeganmediamontage
-            chmod 755 /home/${{ secrets.USERNAME }}/aeganmediamontage
-            chmod 777 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
-            chmod 755 /home/${{ secrets.USERNAME }}/aeganmediamontage/docker
+            set -e
+            mkdir -p /tmp/aeganmedia-deploy
+            mkdir -p /tmp/aeganmedia-scp-tmp
+            chmod 755 /tmp/aeganmedia-deploy
+            chmod 700 /tmp/aeganmedia-scp-tmp
 
       - name: Copy Docker image to server
         uses: appleboy/scp-action@v0.1.7
@@ -64,8 +73,11 @@ jobs:
           username: ${{ secrets.USERNAME }}
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
-          source: "aeganmediamontage-web.tar"
-          target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
+          source: "${{ env.APP_IMAGE }}-${{ env.IMAGE_TAG }}.tar"
+          target: "/tmp/aeganmedia-deploy/"
+          overwrite: true
+          tar_tmp_path: "/tmp/aeganmedia-scp-tmp"
+          debug: true
 
       - name: Copy deployment scripts
         uses: appleboy/scp-action@v0.1.7
@@ -75,10 +87,12 @@ jobs:
           password: ${{ secrets.PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           source: "docker/"
-          target: "/home/${{ secrets.USERNAME }}/aeganmediamontage"
+          target: "/tmp/aeganmedia-deploy/"
+          overwrite: true
+          tar_tmp_path: "/tmp/aeganmedia-scp-tmp"
 
       - name: Deploy on server
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
@@ -87,14 +101,12 @@ jobs:
           command_timeout: 30m
           script: |
             set -e
-            cd /home/${{ secrets.USERNAME }}/aeganmediamontage
 
-            # Create app directories
-            sudo mkdir -p /var/aeganmediamontage/videos
-            sudo mkdir -p /var/aeganmediamontage/projects
-            sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /var/aeganmediamontage
+            # Create app directories (user-owned, no sudo needed)
+            mkdir -p /var/aeganmediamontage/videos
+            mkdir -p /var/aeganmediamontage/projects
 
-            # Write .env file (no leading spaces)
+            # Write .env file
             cat > /var/aeganmediamontage/.env << 'ENVEOF'
             APP_NAME=AeganMediaMontage
             HOST=0.0.0.0
@@ -122,18 +134,27 @@ jobs:
             WORKER_TIMEOUT_SECONDS=10800
             ENVEOF
 
-            # Remove leading spaces from .env file (fix YAML indentation issue)
+            # Remove leading spaces from .env file
             sed -i 's/^[[:space:]]*//' /var/aeganmediamontage/.env
 
-            # Pre-deploy cleanup (stop old containers)
-            chmod +x docker/pre-deploy.sh
-            bash docker/pre-deploy.sh
+            # Load new Docker image
+            docker load -i "/tmp/aeganmedia-deploy/${{ env.APP_IMAGE }}-${{ env.IMAGE_TAG }}.tar"
 
-            # Load new image
-            docker load -i tmp/aeganmediamontage-web.tar
-            rm -f tmp/aeganmediamontage-web.tar
+            # Stop and remove previous containers
+            docker stop aeganmediamontage-web >/dev/null 2>&1 || true
+            docker stop aeganmediamontage-worker >/dev/null 2>&1 || true
+            docker rm -f aeganmediamontage-web >/dev/null 2>&1 || true
+            docker rm -f aeganmediamontage-worker >/dev/null 2>&1 || true
 
-            # Run web app (exposed on 41006 for your external Nginx to proxy)
+            # Remove old images (keep current tag)
+            docker images --format '{{.Repository}}:{{.Tag}}' | awk '
+              $1 ~ /^aeganmediamontage-web:/ && $1 !~ /:${{ env.IMAGE_TAG }}$/ { print $1 }
+            ' | xargs -r docker rmi -f || true
+
+            # Remove dangling image layers
+            docker image prune -f || true
+
+            # Run web app
             docker run -d \
               --name aeganmediamontage-web \
               --restart unless-stopped \
@@ -147,7 +168,7 @@ jobs:
               --log-driver json-file \
               --log-opt max-size=10m \
               --log-opt max-file=3 \
-              aeganmediamontage-web:latest
+              ${{ env.APP_IMAGE }}:${{ env.IMAGE_TAG }}
 
             # Run worker
             docker run -d \
@@ -162,8 +183,26 @@ jobs:
               --log-driver json-file \
               --log-opt max-size=10m \
               --log-opt max-file=3 \
-              aeganmediamontage-web:latest \
+              ${{ env.APP_IMAGE }}:${{ env.IMAGE_TAG }} \
               python -m webapp.worker
+
+            # Health check
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:41006/health >/dev/null; then
+                echo "Health check passed."
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "Health check failed after retries."
+                docker logs --tail 100 aeganmediamontage-web || true
+                docker logs --tail 100 aeganmediamontage-worker || true
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # Cleanup tar files
+            rm -f "/tmp/aeganmedia-deploy/${{ env.APP_IMAGE }}-${{ env.IMAGE_TAG }}.tar"
 
             echo "Deployment complete"
             docker ps --filter "name=aeganmediamontage"
