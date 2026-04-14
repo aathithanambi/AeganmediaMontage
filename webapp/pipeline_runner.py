@@ -1928,6 +1928,138 @@ def _ffmpeg_one_slideshow_segment(
     return i, str(seg), False
 
 
+def _xfade_chain_serial(
+    segs: list[Path],
+    durations: list[float],
+    scene_plan: list[dict[str, Any]] | None,
+    temp_dir: Path,
+    fade_dur: float,
+    x264_preset: str,
+    tag: str = "",
+) -> Path | None:
+    """Chain xfade on a sub-list; returns the final merged clip or None on failure."""
+    prev = segs[0]
+    cumulative_offset = durations[0] - fade_dur
+    timeout = max(300, len(segs) * 30)
+    for i in range(1, len(segs)):
+        out = temp_dir / f"xfade{tag}_{i:04d}.mp4"
+        transition = "fade"
+        if scene_plan and i < len(scene_plan):
+            t = scene_plan[i].get("transition", "fade")
+            if t in ("dissolve", "fade", "slideright", "slideleft", "wiperight", "wipeleft"):
+                transition = t
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(prev), "-i", str(segs[i]),
+            "-filter_complex",
+            f"xfade=transition={transition}:duration={fade_dur}"
+            f":offset={cumulative_offset:.2f},format=yuv420p",
+            "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
+            str(out),
+        ]
+        try:
+            subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout, check=True,
+            )
+            prev = out
+            cumulative_offset += durations[i] - fade_dur
+        except subprocess.CalledProcessError as e:
+            _log(
+                f"Crossfade failed at segment {i} [{tag}]: "
+                f"{e.stderr[:200] if e.stderr else ''}",
+            )
+            return None
+    return prev
+
+
+def _apply_crossfades(
+    segments: list[Path],
+    durations: list[float],
+    scene_plan: list[dict[str, Any]] | None,
+    temp_dir: Path,
+    fade_dur: float,
+    x264_preset: str,
+    seg_workers: int,
+) -> Path | None:
+    """
+    Parallel crossfade for ≥ 6 segments on a multi-core machine.
+    Split into two halves, xfade each in parallel, then xfade-join the two halves.
+    Falls back to serial when there are fewer segments or only one worker.
+    """
+    n = len(segments)
+    _log(f"Applying crossfade transitions ({n} segments)")
+
+    if n <= 5 or seg_workers <= 1:
+        return _xfade_chain_serial(
+            segments, durations, scene_plan, temp_dir, fade_dur, x264_preset,
+        )
+
+    mid = n // 2
+    left_segs = segments[:mid]
+    right_segs = segments[mid:]
+    left_durs = durations[:mid]
+    right_durs = durations[mid:]
+    right_scene_offset = mid
+
+    def _left() -> Path | None:
+        return _xfade_chain_serial(
+            left_segs, left_durs,
+            scene_plan[:mid] if scene_plan else None,
+            temp_dir, fade_dur, x264_preset, tag="L",
+        )
+
+    def _right() -> Path | None:
+        sp_right = scene_plan[right_scene_offset:] if scene_plan else None
+        return _xfade_chain_serial(
+            right_segs, right_durs, sp_right,
+            temp_dir, fade_dur, x264_preset, tag="R",
+        )
+
+    _log(f"Parallel crossfade: half-L ({len(left_segs)} segs) + half-R ({len(right_segs)} segs)")
+    with ThreadPoolExecutor(max_workers=2) as xf_ex:
+        fl = xf_ex.submit(_left)
+        fr = xf_ex.submit(_right)
+        left_clip = fl.result()
+        right_clip = fr.result()
+
+    if not left_clip or not right_clip:
+        _log("Parallel half-xfade failed, retrying serial full chain...")
+        return _xfade_chain_serial(
+            segments, durations, scene_plan, temp_dir, fade_dur, x264_preset,
+        )
+
+    join_offset = sum(left_durs) - fade_dur
+    join_out = temp_dir / "xfade_join.mp4"
+    join_transition = "fade"
+    if scene_plan and mid < len(scene_plan):
+        t = scene_plan[mid].get("transition", "fade")
+        if t in ("dissolve", "fade", "slideright", "slideleft", "wiperight", "wipeleft"):
+            join_transition = t
+
+    _log(f"Joining halves at offset {join_offset:.2f}s (transition={join_transition})")
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", str(left_clip), "-i", str(right_clip),
+                "-filter_complex",
+                f"xfade=transition={join_transition}:duration={fade_dur}"
+                f":offset={join_offset:.2f},format=yuv420p",
+                "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
+                str(join_out),
+            ],
+            capture_output=True, text=True,
+            timeout=max(180, n * 20), check=True,
+        )
+        return join_out
+    except subprocess.CalledProcessError as e:
+        _log(f"Half-join failed: {e.stderr[:200] if e.stderr else ''}")
+        _log("Retrying serial full-chain crossfade...")
+        return _xfade_chain_serial(
+            segments, durations, scene_plan, temp_dir, fade_dur, x264_preset,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Compose video (FFmpeg with audio-synced timing)
 # ---------------------------------------------------------------------------
@@ -2068,40 +2200,12 @@ def step_compose_slideshow(
             return None
 
         if len(segments) > 1:
-            _log("Applying crossfade transitions")
-            prev = segments[0]
-            cumulative_offset = durations[0] - FADE_DUR
-            for i in range(1, len(segments)):
-                xfade_out = temp_dir / f"xfade_{i:04d}.mp4"
-
-                transition = "fade"
-                if scene_plan and i < len(scene_plan):
-                    t = scene_plan[i].get("transition", "fade")
-                    if t in ("dissolve", "fade", "slideright", "slideleft", "wiperight", "wipeleft"):
-                        transition = t
-
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", str(prev), "-i", str(segments[i]),
-                    "-filter_complex",
-                    f"xfade=transition={transition}:duration={FADE_DUR}:offset={cumulative_offset:.2f},format=yuv420p",
-                    "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
-                    str(xfade_out),
-                ]
-                xfade_timeout = max(300, len(segments) * 30)
-                try:
-                    subprocess.run(cmd, capture_output=True, text=True, timeout=xfade_timeout, check=True)
-                    prev = xfade_out
-                    cumulative_offset += durations[i] - FADE_DUR
-                except subprocess.CalledProcessError as e:
-                    _log(f"Crossfade failed at segment {i}, falling back to concat: "
-                         f"{e.stderr[:200] if e.stderr else ''}")
-                    prev = None
-                    break
-
-            if prev and prev != segments[0]:
-                video_track = prev
-            else:
+            video_track = _apply_crossfades(
+                segments, durations, scene_plan, temp_dir,
+                FADE_DUR, x264_preset, seg_workers,
+            )
+            if video_track is None:
+                _log("Crossfade failed — falling back to concat")
                 concat_file = temp_dir / "concat.txt"
                 with open(concat_file, "w") as f:
                     for seg in segments:
@@ -2354,24 +2458,52 @@ def run_pipeline(prompt_file: str) -> None:
     max_scenes_budget = max(6, min(80, int(os.environ.get("PIPELINE_MAX_SCENES", "48"))))
     merged_timings: list[dict[str, Any]] = []
     timeline_mode = bool(has_custom_audio and sentence_timings)
-    if timeline_mode:
-        merged_timings = _merge_timings_for_budget(sentence_timings, max_scenes=max_scenes_budget)
-        _log(f"Timeline segments after budget merge: {len(merged_timings)} (cap {max_scenes_budget})")
-        merged_timings = _add_english_to_timings(merged_timings, audio_lang)
+
+    # ── Optimization: run English translation AND character extraction in parallel ──
+    # Both only need the transcript — they are independent Gemini calls.
+    # Using a 2-thread pool saves one full API round-trip from the serial chain.
+    script_for_visuals_holder: list[str] = [script]
+    character_data_holder: list[dict[str, Any]] = [{}]
+
+    def _task_english() -> None:
+        nonlocal merged_timings
+        if timeline_mode:
+            mt = _merge_timings_for_budget(sentence_timings, max_scenes=max_scenes_budget)
+            _log(f"Timeline segments after budget merge: {len(mt)} (cap {max_scenes_budget})")
+            mt = _add_english_to_timings(mt, audio_lang)
+            merged_timings = mt
+            vis = " ".join(
+                (t.get("text_en") or t.get("text", "")) for t in mt
+            ).strip()
+            script_for_visuals_holder[0] = vis or script
+
+    def _task_characters() -> None:
+        # Use raw script first; if English task finishes first it updates the holder.
+        # Characters only need the content, not necessarily the translated text.
+        char = _extract_characters_and_scenes(script, title, ref_style)
+        character_data_holder[0] = char
+
+    _log("Parallel: English segment translation + character extraction...")
+    with ThreadPoolExecutor(max_workers=2) as _plan_ex:
+        _f_en = _plan_ex.submit(_task_english)
+        _f_ch = _plan_ex.submit(_task_characters)
+        _f_en.result()
+        _f_ch.result()
+
+    script_for_visuals = script_for_visuals_holder[0] or script
+    character_data = character_data_holder[0]
+    if not script_for_visuals:
+        script_for_visuals = script
 
     done_stages.append("english")
     _emit_progress_snapshot(done_stages, "characters", _progress_pct(len(done_stages), 0))
 
-    script_for_visuals = (
-        " ".join((t.get("text_en") or t.get("text", "")) for t in merged_timings).strip()
-        if merged_timings
-        else script
-    )
-    if not script_for_visuals:
-        script_for_visuals = script
-
-    # --- Phase 2b: Character & scene extraction ---
-    character_data = _extract_characters_and_scenes(script_for_visuals, title, ref_style)
+    # If character extraction benefited from English text, re-extract with it
+    if merged_timings and script_for_visuals and script_for_visuals != script:
+        chars_present = character_data.get("characters") or []
+        if not chars_present:
+            _log("Re-extracting characters with English visuals text...")
+            character_data = _extract_characters_and_scenes(script_for_visuals, title, ref_style)
 
     done_stages.append("characters")
     _emit_progress_snapshot(done_stages, "scenes", _progress_pct(len(done_stages), 0))

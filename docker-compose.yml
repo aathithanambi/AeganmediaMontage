@@ -18,7 +18,8 @@ services:
       - "127.0.0.1:51004:41006"
     volumes:
       - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
-    mem_limit: 1g
+    # 1 core + 1.5 GB for the web API — leaves 3 cores + ~6 GB for the worker
+    mem_limit: 1536m
     cpus: 1.0
 
   pipeline-worker:
@@ -32,12 +33,25 @@ services:
       MONGODB_URI: ${MONGODB_URI}
       PIPELINE_RUN_COMMAND: ${PIPELINE_RUN_COMMAND:-python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}}
       VIDEOS_ROOT: /var/aeganmediamontage/videos
+      # ── Single-video speed settings (4-core / 7.7 GB server) ──────────────
+      # 85% of 3 worker cores = 2 parallel FFmpeg segment encodes
+      CPU_PARALLEL_FRACTION: "0.85"
+      FFMPEG_SEGMENT_PARALLEL: "2"
+      FFMPEG_X264_THREADS: "1"
+      FFMPEG_SEGMENT_PRESET: "veryfast"
+      # Image API calls are I/O-bound — 3 in-flight at once is safe
+      IMAGEN_PARALLEL: "3"
+      # Cap scenes so encode + image time stays reasonable
+      PIPELINE_MAX_SCENES: "24"
+      # Use Gemini native image (Nano Banana) with Imagen fallback
+      IMAGE_BACKEND: "auto"
     volumes:
       - /var/aeganmediamontage/videos:/var/aeganmediamontage/videos
       - /var/aeganmediamontage/projects:/app/projects
     entrypoint: ["python", "-m", "webapp.worker"]
-    mem_limit: 2g
-    cpus: 2.0
+    # 3 cores: 2 for parallel FFmpeg + 1 for Python/Gemini HTTP + OS headroom
+    mem_limit: 5g
+    cpus: 3.0
     tmpfs:
-      - /tmp:size=512M,mode=1777
-      - /home/appuser:size=256M,mode=0700
+      - /tmp:size=1G,mode=1777
+      - /home/appuser:size=512M,mode=0700
