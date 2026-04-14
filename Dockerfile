@@ -21,8 +21,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Copy full source
 COPY . /app
 RUN chmod +x /app/docker/app-entrypoint.sh && \
-    mkdir -p /app/projects /var/aeganmediamontage/videos && \
-    chown -R appuser:appgroup /app /var/aeganmediamontage
+    mkdir -p /app/projects /data/videos && \
+    chown -R appuser:appgroup /app /data
 
 USER appuser:appgroup
 

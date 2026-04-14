@@ -112,10 +112,15 @@ jobs:
             # Videos are only removed by the app's auto-cleanup (VIDEO_RETENTION_HOURS)
             DATA_DIR=/home/${{ secrets.USERNAME }}/aeganmedia-data
             
-            # Create data directories (mkdir -p is safe - doesn't delete existing data)
+            # Create data directories with write permissions for container
+            # (mkdir -p is safe - doesn't delete existing data)
             mkdir -p $DATA_DIR/videos
             mkdir -p $DATA_DIR/projects
             mkdir -p $DATA_DIR/logs
+            
+            # Ensure directories are writable by container (UID 10001)
+            chmod 777 $DATA_DIR/videos
+            chmod 777 $DATA_DIR/projects
             
             echo "Data directory: $DATA_DIR (preserved across deployments)"
 
