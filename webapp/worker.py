@@ -95,6 +95,19 @@ def _extract_api_usage(stdout: str) -> dict:
     return {}
 
 
+def _extract_last_step_progress(stdout: str) -> dict | None:
+    """Last STEP_PROGRESS JSON from pipeline stdout (staged UI)."""
+    last: dict | None = None
+    prefix = "STEP_PROGRESS="
+    for line in stdout.splitlines():
+        if line.startswith(prefix):
+            try:
+                last = json.loads(line[len(prefix) :].strip())
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return last
+
+
 def _store_api_usage(run: dict, usage: dict) -> None:
     """Store per-run API usage in the api_usage collection."""
     if not usage:
@@ -137,20 +150,24 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
     api_usage = _extract_api_usage(stdout)
     _store_api_usage(run, api_usage)
 
+    snap = _extract_last_step_progress(stdout)
+    completed_update: dict = {
+        "status": "completed",
+        "stdout": stdout[-12000:],
+        "stderr": stderr[-12000:],
+        "completedAt": now,
+        "updatedAt": now,
+        "outputVideoPath": video_path,
+        "elapsedSeconds": round(elapsed_seconds, 1),
+        "apiUsage": api_usage,
+        "progress": 100,
+    }
+    if snap is not None:
+        completed_update["progressSnapshot"] = snap
+
     db.pipeline_runs.update_one(
         {"_id": run["_id"]},
-        {
-            "$set": {
-                "status": "completed",
-                "stdout": stdout[-12000:],
-                "stderr": stderr[-12000:],
-                "completedAt": now,
-                "updatedAt": now,
-                "outputVideoPath": video_path,
-                "elapsedSeconds": round(elapsed_seconds, 1),
-                "apiUsage": api_usage,
-            }
-        },
+        {"$set": completed_update},
     )
     if video_path:
         db.video_jobs.insert_one(
@@ -331,6 +348,25 @@ def _execute_run(run: dict) -> None:
                         log.info("Run %s was cancelled by user, killing pipeline", run["_id"])
                         proc.kill()
                         break
+
+                    if line.startswith("STEP_PROGRESS="):
+                        try:
+                            snap = json.loads(line.split("=", 1)[1].strip())
+                            pct = int(snap.get("overallPct", last_progress))
+                            pct = max(last_progress, max(0, min(100, pct)))
+                            last_progress = pct
+                            db.pipeline_runs.update_one(
+                                {"_id": run["_id"]},
+                                {"$set": {
+                                    "progress": pct,
+                                    "progressSnapshot": snap,
+                                    "elapsedSeconds": round(elapsed, 1),
+                                    "updatedAt": datetime.now(UTC),
+                                }},
+                            )
+                        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                            log.warning("STEP_PROGRESS parse failed: %s", exc)
+                        continue
 
                     img_match = re.search(r"Scene (\d+)/(\d+).*Imagen", line)
                     if img_match:

@@ -19,9 +19,11 @@ import re
 import subprocess
 import sys
 import textwrap
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -36,17 +38,21 @@ _api_usage: dict[str, Any] = {
     "estimated_cost_usd": 0.0,
 }
 
+_api_usage_lock = threading.Lock()
+
+
 def _track_api(service: str, cost_estimate: float = 0.0, chars: int = 0) -> None:
-    if service == "gemini":
-        _api_usage["gemini_calls"] += 1
-        _api_usage["estimated_cost_usd"] += cost_estimate
-    elif service == "imagen":
-        _api_usage["imagen_calls"] += 1
-        _api_usage["estimated_cost_usd"] += cost_estimate
-    elif service == "tts":
-        _api_usage["tts_calls"] += 1
-        _api_usage["tts_characters"] += chars
-        _api_usage["estimated_cost_usd"] += cost_estimate
+    with _api_usage_lock:
+        if service == "gemini":
+            _api_usage["gemini_calls"] += 1
+            _api_usage["estimated_cost_usd"] += cost_estimate
+        elif service == "imagen":
+            _api_usage["imagen_calls"] += 1
+            _api_usage["estimated_cost_usd"] += cost_estimate
+        elif service == "tts":
+            _api_usage["tts_calls"] += 1
+            _api_usage["tts_characters"] += chars
+            _api_usage["estimated_cost_usd"] += cost_estimate
 
 def get_api_usage() -> dict[str, Any]:
     return dict(_api_usage)
@@ -64,6 +70,10 @@ os.chdir(str(PROJ_ROOT))
 
 from tools.tool_registry import registry
 from tools.base_tool import ToolStatus
+from webapp.pipeline_stages import PIPELINE_STAGE_ORDER
+
+_PIPELINE_STAGE_IDS: list[str] = [s[0] for s in PIPELINE_STAGE_ORDER]
+_N_PIPELINE_STAGES: int = len(_PIPELINE_STAGE_IDS)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -71,6 +81,113 @@ from tools.base_tool import ToolStatus
 
 def _log(msg: str) -> None:
     print(f"[pipeline-runner] {msg}", flush=True)
+
+
+def _emit_progress_snapshot(completed: list[str], current: str | None, overall_pct: int) -> None:
+    """Emit machine-readable progress for the worker UI (step-by-step stages)."""
+    payload = {
+        "completed": completed,
+        "current": current,
+        "overallPct": max(0, min(100, overall_pct)),
+        "stageLabels": dict(PIPELINE_STAGE_ORDER),
+    }
+    print(f"STEP_PROGRESS={json.dumps(payload)}", flush=True)
+
+
+def _progress_pct(completed_len: int, within_stage: float = 0.0) -> int:
+    """Map completed stage count + 0..1 fraction of current stage to 0..99 (100 reserved for final)."""
+    if _N_PIPELINE_STAGES <= 0:
+        return 0
+    frac = max(0.0, min(0.999, within_stage))
+    return max(0, min(99, int(100 * (completed_len + frac) / _N_PIPELINE_STAGES)))
+
+
+def _merge_timings_for_budget(
+    timings: list[dict[str, Any]],
+    max_scenes: int = 48,
+) -> list[dict[str, Any]]:
+    """Merge consecutive timed segments so we have at most max_scenes (faster, fewer images)."""
+    if not timings:
+        return []
+    norm: list[dict[str, Any]] = []
+    for t in timings:
+        start = float(t.get("start", 0))
+        end = float(t.get("end", start + 0.5))
+        dur = float(t.get("duration", max(0.1, end - start)))
+        text = (t.get("text") or "").strip()
+        text_en = (t.get("text_en") or text).strip()
+        norm.append({"start": start, "end": end, "duration": max(0.15, dur), "text": text, "text_en": text_en})
+    if len(norm) <= max_scenes:
+        return norm
+    merged: list[dict[str, Any]] = []
+    n = len(norm)
+    idx = 0
+    remaining_slots = max_scenes
+    while idx < n and remaining_slots > 0:
+        items_left = n - idx
+        take = max(1, (items_left + remaining_slots - 1) // remaining_slots)
+        chunk = norm[idx : idx + take]
+        idx += take
+        remaining_slots -= 1
+        merged.append({
+            "start": chunk[0]["start"],
+            "end": chunk[-1]["end"],
+            "duration": sum(c["duration"] for c in chunk),
+            "text": " ".join(c["text"] for c in chunk if c["text"]),
+            "text_en": " ".join(c["text_en"] for c in chunk if c["text_en"]),
+        })
+    return merged
+
+
+def _add_english_to_timings(timings: list[dict[str, Any]], source_lang: str) -> list[dict[str, Any]]:
+    """Add text_en per segment for image/scene planning (Imagen prompts in English)."""
+    if not timings:
+        return timings
+    low = (source_lang or "english").lower()
+    if low in ("english", "en", ""):
+        for t in timings:
+            t["text_en"] = (t.get("text") or "").strip()
+        return timings
+    if not _google_available():
+        for t in timings:
+            t["text_en"] = (t.get("text") or "").strip()
+        return timings
+
+    batch_size = 35
+    all_en: list[str] = []
+    for batch_start in range(0, len(timings), batch_size):
+        batch = timings[batch_start : batch_start + batch_size]
+        numbered = "\n".join(f'{i}: {t.get("text", "")}' for i, t in enumerate(batch))
+        prompt = f"""Translate each numbered line from {source_lang} to clear English for AI image generation.
+Preserve names, story meaning, and emotional tone. One translation per line, same order.
+Lines:
+{numbered}
+
+Respond ONLY with a JSON array of strings (length {len(batch)})."""
+        _log(f"Translating {len(batch)} timed lines to English for visual alignment...")
+        result = _gemini_generate(prompt, max_tokens=4096)
+        if not result:
+            for t in batch:
+                all_en.append((t.get("text") or "").strip())
+            continue
+        try:
+            arr = _parse_json_response(result)
+            if isinstance(arr, list) and len(arr) >= len(batch):
+                for i in range(len(batch)):
+                    all_en.append(str(arr[i]).strip() if i < len(arr) else batch[i].get("text", ""))
+            elif isinstance(arr, list):
+                for i, t in enumerate(batch):
+                    all_en.append(str(arr[i]).strip() if i < len(arr) else (t.get("text") or ""))
+            else:
+                for t in batch:
+                    all_en.append((t.get("text") or "").strip())
+        except (json.JSONDecodeError, ValueError, TypeError):
+            for t in batch:
+                all_en.append((t.get("text") or "").strip())
+
+    for i, t in enumerate(timings):
+        t["text_en"] = all_en[i] if i < len(all_en) else (t.get("text") or "").strip()
+    return timings
 
 # ---------------------------------------------------------------------------
 # Tool helpers
@@ -1075,6 +1192,104 @@ Respond ONLY with the JSON array."""
     return all_scenes
 
 
+def step_generate_scene_plan_timeline(
+    segments: list[dict[str, Any]],
+    character_data: dict[str, Any],
+    ref_style: dict[str, str],
+    title: str,
+) -> list[dict[str, Any]]:
+    """Build one scene per timed segment: durations match audio; image prompts from English story text."""
+    if not segments:
+        return []
+
+    style_line = ref_style.get("art_style", DEFAULT_STYLE["art_style"])
+    try:
+        char_snip = json.dumps(character_data.get("characters", [])[:12], ensure_ascii=True)
+    except (TypeError, ValueError):
+        char_snip = "[]"
+    char_snip = char_snip[:2800]
+
+    def _fallback_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        fb: list[dict[str, Any]] = []
+        for seg in batch:
+            en = seg.get("text_en") or seg.get("text", "")
+            fb.append({
+                "narration": seg.get("text", ""),
+                "image_prompt": f"{IMAGE_STYLE_PREFIX}{en}",
+                "duration": float(seg.get("duration", 4.0)),
+                "transition": "dissolve",
+                "search_query": " ".join(re.findall(r"[a-zA-Z]{3,}", en)[:4]) or "story scene",
+                "mood": "cinematic",
+            })
+        return fb
+
+    def _one_batch(batch: list[dict[str, Any]], base_idx: int) -> list[dict[str, Any]]:
+        lines: list[str] = []
+        for j, seg in enumerate(batch):
+            dur = float(seg.get("duration", 3.0))
+            en = (seg.get("text_en") or seg.get("text", ""))[:450].replace("\n", " ")
+            orig = (seg.get("text") or "")[:280].replace("\n", " ")
+            lines.append(
+                f"Scene {base_idx + j + 1} | duration_sec={dur:.3f} | EN: {en} | ORIG: {orig}"
+            )
+        block = "\n".join(lines)
+        prompt = f"""You create still-image scenes for a narrated video. Return a JSON array of EXACTLY {len(batch)} objects, same order as the lines below.
+
+Title: {title}
+Art direction: {IMAGE_STYLE_PREFIX}{style_line}
+
+Characters (keep consistent when the same person or animal reappears):
+{char_snip}
+
+Timed scenes (each line has duration_sec — copy it EXACTLY into the "duration" field as a float):
+{block}
+
+Rules:
+- "narration": use the ORIG text for that scene (subtitle / spoken line).
+- "image_prompt": MUST begin with the same 2D oil-painting illustrated style wording, then describe ONLY what the EN line says is happening — literal visuals, not metaphors unrelated to the sentence.
+- "duration": must equal duration_sec from that line (float).
+- "transition": "dissolve" or "fade".
+- "search_query": 2-4 English keywords.
+
+Respond ONLY with the JSON array."""
+
+        _log(f"Timeline scene plan: batch {base_idx + 1}-{base_idx + len(batch)} ({len(batch)} scenes)...")
+        result = _gemini_generate(prompt, max_tokens=8192)
+        if result:
+            try:
+                scenes = _parse_json_response(result)
+                if isinstance(scenes, list) and len(scenes) >= len(batch):
+                    fixed: list[dict[str, Any]] = []
+                    for j in range(len(batch)):
+                        s = scenes[j] if j < len(scenes) else {}
+                        if not isinstance(s, dict):
+                            s = {}
+                        dur = float(batch[j].get("duration", 4.0))
+                        s["duration"] = dur
+                        s["narration"] = s.get("narration") or batch[j].get("text", "")
+                        ip = s.get("image_prompt") or ""
+                        if "2d" not in ip.lower() and "illustrat" not in ip.lower():
+                            ip = f"{IMAGE_STYLE_PREFIX}{batch[j].get('text_en', '')}"
+                        s["image_prompt"] = ip
+                        s.setdefault("transition", "dissolve")
+                        s.setdefault("search_query", "story")
+                        fixed.append(s)
+                    return fixed
+            except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:
+                _log(f"Timeline scene JSON issue: {e}")
+        return _fallback_batch(batch)
+
+    n = len(segments)
+    batch_n = 20
+    if n <= batch_n:
+        return _one_batch(segments, 0)
+    all_out: list[dict[str, Any]] = []
+    for i in range(0, n, batch_n):
+        chunk = segments[i : i + batch_n]
+        all_out.extend(_one_batch(chunk, i))
+    return all_out
+
+
 # ---------------------------------------------------------------------------
 # Subtitle translation (Gemini)
 # ---------------------------------------------------------------------------
@@ -1193,18 +1408,20 @@ def step_tts(text: str, output_path: Path, language: str = "english") -> str | N
 def step_fetch_images(
     scene_plan: list[dict[str, Any]],
     output_dir: Path,
+    *,
+    on_image_progress: Callable[[int, int], None] | None = None,
 ) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    images: list[str] = []
+    images: list[str | None] = [None] * len(scene_plan)
 
     if not _google_available():
         _log("No GOOGLE_API_KEY — cannot generate images")
-        return images
+        return []
 
-    _log("Generating images via Google Imagen...")
+    parallel = max(1, min(8, int(os.environ.get("IMAGEN_PARALLEL", "3"))))
+    _log(f"Generating images via Google Imagen (parallel={parallel})...")
 
-    total = len(scene_plan)
-    for i, scene in enumerate(scene_plan):
+    def _one_scene(i: int, scene: dict[str, Any]) -> tuple[int, str | None]:
         out = output_dir / f"scene_{i:02d}.png"
         image_prompt = scene.get("image_prompt", "")
         if not image_prompt:
@@ -1213,17 +1430,46 @@ def step_fetch_images(
         if "2d" not in image_prompt.lower() and "illustrat" not in image_prompt.lower() and "oil" not in image_prompt.lower():
             image_prompt = f"{IMAGE_STYLE_PREFIX}{image_prompt}"
 
-        pct = int((i / total) * 100) if total > 0 else 0
-        _log(f"Scene {i+1}/{total}: generating image via Imagen ({pct}%)")
+        _log(f"Scene {i+1}/{len(scene_plan)}: queued Imagen")
         result_path = _google_imagen_generate(image_prompt, out, aspect_ratio="16:9")
-        if result_path:
-            images.append(result_path)
-            continue
+        if not result_path:
+            _log(f"Scene {i+1}: Imagen failed — no image obtained")
+        return i, result_path
 
-        _log(f"Scene {i+1}: Imagen failed — no image obtained")
+    total = len(scene_plan)
+    done_lock = threading.Lock()
+    done_count = 0
 
-    _log(f"Image generation complete: {len(images)}/{total} images")
-    return images
+    def _track_done() -> None:
+        nonlocal done_count
+        with done_lock:
+            done_count += 1
+            d, t = done_count, total
+        if on_image_progress:
+            try:
+                on_image_progress(d, t)
+            except Exception as e:
+                _log(f"Image progress callback error: {e}")
+
+    if total == 0:
+        return []
+
+    if parallel <= 1:
+        for i, scene in enumerate(scene_plan):
+            idx, path = _one_scene(i, scene)
+            images[idx] = path
+            _track_done()
+    else:
+        with ThreadPoolExecutor(max_workers=parallel) as ex:
+            futures = [ex.submit(_one_scene, i, scene) for i, scene in enumerate(scene_plan)]
+            for fut in as_completed(futures):
+                idx, path = fut.result()
+                images[idx] = path
+                _track_done()
+
+    out_list = [p for p in images if p]
+    _log(f"Image generation complete: {len(out_list)}/{total} images")
+    return out_list
 
 
 # ---------------------------------------------------------------------------
@@ -1259,6 +1505,9 @@ def step_compose_slideshow(
     scene_plan: list[dict[str, Any]] | None = None,
     sections: list[str] | None = None,
     enable_subtitles: bool = False,
+    *,
+    min_scene_duration: float = 3.0,
+    x264_preset: str = "fast",
 ) -> str | None:
     if not images:
         _log("No images to compose")
@@ -1268,20 +1517,21 @@ def step_compose_slideshow(
     W, H, FPS = 1920, 1080, 30
     FADE_DUR = 1.0
 
+    floor_dur = max(0.12, float(min_scene_duration))
     durations: list[float] = []
     if scene_plan:
         for s in scene_plan:
             d = s.get("duration", 6.0)
             try:
-                durations.append(max(3.0, float(d)))
+                durations.append(max(floor_dur, float(d)))
             except (ValueError, TypeError):
-                durations.append(6.0)
+                durations.append(max(floor_dur, 6.0))
 
     if audio_path and Path(audio_path).exists():
         total_dur = _probe_duration(audio_path)
         if total_dur > 0:
             if not durations or abs(sum(durations) - total_dur) > total_dur * 0.3:
-                per_image = max(3.0, total_dur / len(images))
+                per_image = max(floor_dur, total_dur / len(images))
                 durations = [per_image] * len(images)
             else:
                 ratio = total_dur / sum(durations) if sum(durations) > 0 else 1.0
@@ -1330,12 +1580,13 @@ def step_compose_slideshow(
 
             if enable_subtitles and sections and i < len(sections) and sections[i].strip():
                 sub_text = _escape_drawtext(sections[i].strip()[:120])
+                sub_end = max(0.15, seg_dur - min(0.5, seg_dur * 0.2))
                 vf_parts.append(
                     f"drawtext=text='{sub_text}'"
                     f":fontsize=32:fontcolor=white"
                     f":borderw=2:bordercolor=black@0.8"
                     f":x=(w-tw)/2:y=h-70"
-                    f":enable='between(t,0.5,{seg_dur - 0.5})'"
+                    f":enable='between(t,0.05,{sub_end})'"
                 )
 
             vf = ",".join(vf_parts)
@@ -1345,7 +1596,7 @@ def step_compose_slideshow(
                 "-loop", "1", "-i", img,
                 "-t", str(seg_dur),
                 "-vf", vf,
-                "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+                "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
                 "-r", str(FPS), "-pix_fmt", "yuv420p",
                 seg,
             ]
@@ -1363,7 +1614,7 @@ def step_compose_slideshow(
                     "-t", str(seg_dur),
                     "-vf", f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
                            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p",
-                    "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+                    "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
                     "-r", str(FPS), "-pix_fmt", "yuv420p",
                     seg,
                 ]
@@ -1389,7 +1640,7 @@ def step_compose_slideshow(
                     "-i", str(prev), "-i", str(segments[i]),
                     "-filter_complex",
                     f"xfade=transition={transition}:duration={FADE_DUR}:offset={cumulative_offset:.2f},format=yuv420p",
-                    "-c:v", "libx264", "-crf", "18", "-preset", "medium",
+                    "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
                     str(xfade_out),
                 ]
                 xfade_timeout = max(300, len(segments) * 30)
@@ -1498,6 +1749,32 @@ def _verify_output(
     return result
 
 
+def _cleanup_intermediate_assets(project_dir: Path) -> None:
+    """Remove heavy intermediates after final.mp4 succeeds (keeps prompts, final render)."""
+    img_dir = project_dir / "assets" / "images"
+    if img_dir.is_dir():
+        for p in img_dir.iterdir():
+            try:
+                if p.is_file():
+                    p.unlink()
+            except OSError as e:
+                _log(f"Cleanup skip {p}: {e}")
+    assets = project_dir / "assets"
+    if assets.is_dir():
+        for p in assets.glob("tts_chunk_*.mp3"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        for name in ("tts_concat.txt",):
+            tp = assets / name
+            if tp.is_file():
+                try:
+                    tp.unlink()
+                except OSError:
+                    pass
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline orchestration
 # ---------------------------------------------------------------------------
@@ -1551,6 +1828,10 @@ def run_pipeline(prompt_file: str) -> None:
     renders_dir = project_dir / "renders"
     renders_dir.mkdir(parents=True, exist_ok=True)
 
+    done_stages: list[str] = []
+    done_stages.append("setup")
+    _emit_progress_snapshot(done_stages, "reference", _progress_pct(len(done_stages), 0))
+
     # --- Phase 0: Reference video analysis ---
     ref_summary = None
     ref_path = step_download_reference(ref_url, project_dir) if ref_url else None
@@ -1563,6 +1844,9 @@ def run_pipeline(prompt_file: str) -> None:
 
     # --- Phase 0b: Reference style analysis ---
     ref_style = _analyze_reference_style(ref_summary or "")
+
+    done_stages.append("reference")
+    _emit_progress_snapshot(done_stages, "transcribe", _progress_pct(len(done_stages), 0))
 
     # --- Phase 1: Parse production intent ---
     intent = _parse_production_intent(raw_prompt, ref_summary)
@@ -1603,6 +1887,9 @@ def run_pipeline(prompt_file: str) -> None:
             else:
                 _log("WARNING: Could not transcribe audio — images may not match audio content")
 
+    done_stages.append("transcribe")
+    _emit_progress_snapshot(done_stages, "english", _progress_pct(len(done_stages), 0))
+
     # --- Phase 2: Script generation ---
     if has_custom_audio:
         if audio_transcript:
@@ -1619,24 +1906,54 @@ def run_pipeline(prompt_file: str) -> None:
         )
     _log(f"Script ({len(script)} chars):\n{script[:300]}...")
 
+    max_scenes_budget = max(6, min(80, int(os.environ.get("PIPELINE_MAX_SCENES", "48"))))
+    merged_timings: list[dict[str, Any]] = []
+    timeline_mode = bool(has_custom_audio and sentence_timings)
+    if timeline_mode:
+        merged_timings = _merge_timings_for_budget(sentence_timings, max_scenes=max_scenes_budget)
+        _log(f"Timeline segments after budget merge: {len(merged_timings)} (cap {max_scenes_budget})")
+        merged_timings = _add_english_to_timings(merged_timings, audio_lang)
+
+    done_stages.append("english")
+    _emit_progress_snapshot(done_stages, "characters", _progress_pct(len(done_stages), 0))
+
+    script_for_visuals = (
+        " ".join((t.get("text_en") or t.get("text", "")) for t in merged_timings).strip()
+        if merged_timings
+        else script
+    )
+    if not script_for_visuals:
+        script_for_visuals = script
+
     # --- Phase 2b: Character & scene extraction ---
-    character_data = _extract_characters_and_scenes(script, title, ref_style)
+    character_data = _extract_characters_and_scenes(script_for_visuals, title, ref_style)
+
+    done_stages.append("characters")
+    _emit_progress_snapshot(done_stages, "scenes", _progress_pct(len(done_stages), 0))
 
     # --- Phase 3: Scene plan with character consistency ---
-    # Scale scene count based on duration: ~1 scene per 8s for short, per 25s for long videos
-    if target_dur <= 120:
-        scene_count = max(2, min(15, int(target_dur / 6)))
-    elif target_dur <= 600:
-        scene_count = max(10, min(40, int(target_dur / 12)))
+    if merged_timings:
+        scene_plan = step_generate_scene_plan_timeline(
+            merged_timings, character_data, ref_style, title,
+        )
     else:
-        scene_count = max(30, min(80, int(target_dur / 20)))
-    scene_plan = step_generate_scene_plan(
-        script, content_prompt, title, ref_summary,
-        ref_style=ref_style,
-        character_data=character_data,
-        scene_count=scene_count,
-        sentence_timings=sentence_timings if sentence_timings else None,
-    )
+        # Scale scene count based on duration: ~1 scene per 8s for short, per 25s for long videos
+        if target_dur <= 120:
+            scene_count = max(2, min(15, int(target_dur / 6)))
+        elif target_dur <= 600:
+            scene_count = max(10, min(40, int(target_dur / 12)))
+        else:
+            scene_count = max(30, min(80, int(target_dur / 20)))
+        scene_plan = step_generate_scene_plan(
+            script, content_prompt, title, ref_summary,
+            ref_style=ref_style,
+            character_data=character_data,
+            scene_count=scene_count,
+            sentence_timings=sentence_timings if sentence_timings else None,
+        )
+    done_stages.append("scenes")
+    _emit_progress_snapshot(done_stages, "subtitles", _progress_pct(len(done_stages), 0))
+
     _log(f"Scene plan: {len(scene_plan)} scenes")
     for i, s in enumerate(scene_plan):
         _log(f"  Scene {i+1}: mood={s.get('mood', '?')} dur={s.get('duration', '?')}s trans={s.get('transition', '?')}")
@@ -1657,6 +1974,9 @@ def run_pipeline(prompt_file: str) -> None:
     else:
         subtitle_sections = narration_sections
 
+    done_stages.append("subtitles")
+    _emit_progress_snapshot(done_stages, "tts", _progress_pct(len(done_stages), 0))
+
     # --- Phase 4: TTS (skipped if custom audio) ---
     if uploaded_audio and Path(uploaded_audio).exists():
         _log(f"Using uploaded audio: {uploaded_audio}")
@@ -1664,8 +1984,22 @@ def run_pipeline(prompt_file: str) -> None:
     else:
         audio_path = step_tts(script, assets_dir / "narration.mp3", language=audio_lang)
 
+    done_stages.append("tts")
+    _emit_progress_snapshot(done_stages, "images", _progress_pct(len(done_stages), 0))
+
+    def _on_img_progress(d: int, t: int) -> None:
+        frac = (d / t) if t else 1.0
+        _emit_progress_snapshot(
+            list(done_stages),
+            "images",
+            _progress_pct(len(done_stages), min(0.95, 0.05 + 0.9 * frac)),
+        )
+
     # --- Phase 5: Character-consistent images ---
-    images = step_fetch_images(scene_plan, assets_dir / "images")
+    images = step_fetch_images(
+        scene_plan, assets_dir / "images",
+        on_image_progress=_on_img_progress,
+    )
 
     if not images:
         _log("No images generated — creating gradient placeholders")
@@ -1683,15 +2017,29 @@ def run_pipeline(prompt_file: str) -> None:
             if placeholder.exists():
                 images.append(str(placeholder))
 
+    done_stages.append("images")
+    _emit_progress_snapshot(done_stages, "compose", _progress_pct(len(done_stages), 0))
+
     # --- Phase 6: Compose final video ---
     final_path = renders_dir / "final.mp4"
+
+    if os.environ.get("SLIDESHOW_MIN_SCENE_SEC"):
+        min_scene_sec = float(os.environ["SLIDESHOW_MIN_SCENE_SEC"])
+    else:
+        min_scene_sec = 0.35 if merged_timings else 3.0
+    ff_preset = os.environ.get("FFMPEG_SEGMENT_PRESET", "fast")
 
     video_path = step_compose_slideshow(
         images, audio_path, final_path,
         scene_plan=scene_plan,
         sections=subtitle_sections,
         enable_subtitles=enable_subtitles,
+        min_scene_duration=min_scene_sec,
+        x264_preset=ff_preset,
     )
+
+    done_stages.append("compose")
+    _emit_progress_snapshot(done_stages, "verify", _progress_pct(len(done_stages), 0))
 
     # --- Phase 7: Post-creation verification ---
     if video_path and Path(video_path).exists():
@@ -1701,6 +2049,10 @@ def run_pipeline(prompt_file: str) -> None:
             _log("Verification PASSED")
         else:
             _log("Verification FAILED — but video was still created")
+
+        done_stages.append("verify")
+        _emit_progress_snapshot(done_stages, None, 100)
+        _cleanup_intermediate_assets(project_dir)
 
         elapsed = time.time() - pipeline_start
         usage = get_api_usage()

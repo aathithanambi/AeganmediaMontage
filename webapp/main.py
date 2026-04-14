@@ -21,6 +21,7 @@ from webapp.config import settings
 from webapp.database import get_db
 from webapp.api_keys import get_api_key_status, get_api_summary
 from webapp.security import create_access_token, decode_access_token, hash_password, verify_password
+from webapp.pipeline_stages import PIPELINE_STAGE_ORDER
 
 app = FastAPI(title=settings.app_name)
 
@@ -508,7 +509,8 @@ def run_progress_api(request: Request, run_id: str):
     run = db.pipeline_runs.find_one(
         {"_id": ObjectId(run_id)},
         {"status": 1, "progress": 1, "error": 1, "outputVideoPath": 1,
-         "requestedBy": 1, "elapsedSeconds": 1, "etaString": 1},
+         "requestedBy": 1, "elapsedSeconds": 1, "etaString": 1,
+         "progressSnapshot": 1},
     )
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -520,14 +522,17 @@ def run_progress_api(request: Request, run_id: str):
         safe = _safe_video_path(run["outputVideoPath"])
         video_ready = safe is not None and safe.exists()
 
-    return JSONResponse({
+    payload: dict[str, Any] = {
         "status": run.get("status", "unknown"),
         "progress": run.get("progress", 0),
         "error": run.get("error"),
         "videoReady": video_ready,
         "elapsedSeconds": run.get("elapsedSeconds", 0),
         "eta": run.get("etaString", ""),
-    })
+    }
+    if run.get("progressSnapshot"):
+        payload["progressSnapshot"] = run["progressSnapshot"]
+    return JSONResponse(payload)
 
 
 @app.post("/api/run/{run_id}/cancel")
@@ -599,7 +604,12 @@ def run_detail(request: Request, run_id: str):
 
     return templates.TemplateResponse(
         request, "run_detail.html",
-        _template_context(request, run=run, video_available=video_available),
+        _template_context(
+            request,
+            run=run,
+            video_available=video_available,
+            pipeline_stages=PIPELINE_STAGE_ORDER,
+        ),
     )
 
 

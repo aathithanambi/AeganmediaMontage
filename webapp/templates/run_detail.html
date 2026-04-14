@@ -42,6 +42,17 @@
       <button class="btn btn-danger btn-sm" id="cancel-btn" onclick="cancelRun()">Cancel</button>
     </div>
   </div>
+  {% if pipeline_stages %}
+  <p class="muted" style="margin:12px 0 4px;font-size:0.85rem">Stages</p>
+  <ul class="pipeline-stage-list" id="stage-list">
+    {% for sid, label in pipeline_stages %}
+    <li data-stage="{{ sid }}" class="stage-row stage-pending">
+      <span class="stage-dot" aria-hidden="true"></span>
+      <span class="stage-name">{{ label }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
 </section>
 {% endif %}
 
@@ -151,6 +162,23 @@ function cancelRun() {
   const badge = document.getElementById("status-badge");
   const section = document.getElementById("progress-section");
   const etaText = document.getElementById("eta-text");
+  const stageList = document.getElementById("stage-list");
+
+  const initialSnap = {{ (run.get("progressSnapshot") or {}) | tojson }};
+
+  function applyProgressSnapshot(snap) {
+    if (!snap || !stageList) return;
+    const done = new Set(snap.completed || []);
+    const cur = snap.current || null;
+    stageList.querySelectorAll("li[data-stage]").forEach(function(li) {
+      const id = li.getAttribute("data-stage");
+      li.classList.remove("stage-done", "stage-current", "stage-pending");
+      if (done.has(id)) li.classList.add("stage-done");
+      else if (cur && id === cur) li.classList.add("stage-current");
+      else li.classList.add("stage-pending");
+    });
+  }
+  applyProgressSnapshot(initialSnap);
 
   const labels = {
     5: "Starting pipeline...",
@@ -197,7 +225,11 @@ function cancelRun() {
       .then(data => {
         const pct = data.progress || 0;
         if (fill) fill.style.width = pct + "%";
-        if (text) text.textContent = pct + "% \u2014 " + getLabel(pct);
+        if (data.progressSnapshot) applyProgressSnapshot(data.progressSnapshot);
+        const stageHint = (data.progressSnapshot && data.progressSnapshot.current && data.progressSnapshot.stageLabels && data.progressSnapshot.stageLabels[data.progressSnapshot.current])
+          ? data.progressSnapshot.stageLabels[data.progressSnapshot.current]
+          : getLabel(pct);
+        if (text) text.textContent = pct + "% \u2014 " + stageHint;
 
         if (etaText) {
           const elapsed = data.elapsedSeconds || 0;
