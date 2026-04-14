@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # pre-deploy.sh — Runs on the remote server BEFORE deploying new containers.
 # Stops and removes old AeganMediaMontage containers and prunes dangling images.
+#
+# IMPORTANT: This script NEVER deletes user data!
+# - aeganmedia-data/videos/ — User videos (only deleted by auto-cleanup based on VIDEO_RETENTION_HOURS)
+# - aeganmedia-data/projects/ — Project files (persistent)
+# - aeganmedia-data/.env — Environment config (persistent)
+#
+# Only Docker containers and images are cleaned up during deployment.
 set -euo pipefail
 
 CONTAINERS=("aeganmediamontage-web" "aeganmediamontage-worker")
 
-echo "=== Pre-deploy cleanup ==="
+echo "=== Pre-deploy cleanup (containers only, data preserved) ==="
 
 for cname in "${CONTAINERS[@]}"; do
   if docker ps -a --format '{{.Names}}' | grep -qx "$cname"; then
