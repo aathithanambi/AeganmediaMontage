@@ -49,6 +49,10 @@ def _track_api(service: str, cost_estimate: float = 0.0, chars: int = 0) -> None
         elif service == "imagen":
             _api_usage["imagen_calls"] += 1
             _api_usage["estimated_cost_usd"] += cost_estimate
+        elif service == "gemini_image":
+            # Native Gemini image (incl. "Nano Banana"); count toward image quota in dashboards
+            _api_usage["imagen_calls"] += 1
+            _api_usage["estimated_cost_usd"] += cost_estimate
         elif service == "tts":
             _api_usage["tts_calls"] += 1
             _api_usage["tts_characters"] += chars
@@ -352,6 +356,138 @@ def _google_imagen_generate(
                 break
 
     return None
+
+
+def _gemini_response_first_image_b64(data: dict[str, Any]) -> tuple[str | None, str]:
+    """Parse generateContent response for inline image bytes (camelCase or snake_case)."""
+    for cand in data.get("candidates") or []:
+        content = cand.get("content") or {}
+        for part in content.get("parts") or []:
+            inline = part.get("inlineData") or part.get("inline_data")
+            if not inline or not isinstance(inline, dict):
+                continue
+            b64 = inline.get("data")
+            if not b64:
+                continue
+            mime = (
+                inline.get("mimeType")
+                or inline.get("mime_type")
+                or "image/png"
+            )
+            return str(b64), str(mime)
+    return None, ""
+
+
+def _google_gemini_native_image_generate(
+    prompt: str,
+    output_path: Path,
+    aspect_ratio: str = "16:9",
+) -> str | None:
+    """Image generation via Gemini native image models (aka Nano Banana family) — generateContent + IMAGE."""
+    api_key = _google_api_key()
+    if not api_key:
+        return None
+
+    models_raw = os.environ.get(
+        "GEMINI_NATIVE_IMAGE_MODELS",
+        "gemini-2.0-flash-preview-image-generation,"
+        "gemini-2.5-flash-image-preview,"
+        "gemini-3.1-flash-image-preview",
+    )
+    models = [m.strip() for m in models_raw.split(",") if m.strip()]
+
+    modality_variants: list[list[str]] = [["TEXT", "IMAGE"], ["IMAGE"]]
+
+    for model in models:
+        url = GEMINI_ENDPOINT.format(model=model) + f"?key={api_key}"
+        model_not_found = False
+
+        for modalities in modality_variants:
+            if model_not_found:
+                break
+            gen_cfg: dict[str, Any] = {
+                "responseModalities": modalities,
+                "temperature": 0.85,
+            }
+            if aspect_ratio:
+                gen_cfg["imageConfig"] = {"aspectRatio": aspect_ratio}
+
+            body: dict[str, Any] = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": gen_cfg,
+            }
+
+            for attempt in range(3):
+                try:
+                    resp = requests.post(
+                        url,
+                        json=body,
+                        headers={
+                            "Content-Type": "application/json",
+                            "x-goog-api-key": api_key,
+                        },
+                        timeout=120,
+                    )
+                    if resp.status_code == 429:
+                        wait = min(5 * (attempt + 1), 60)
+                        _log(
+                            f"Gemini image rate-limited (429) on {model}, waiting {wait}s "
+                            f"(attempt {attempt + 1}/3)",
+                        )
+                        time.sleep(wait)
+                        continue
+                    if resp.status_code == 404:
+                        _log(f"Gemini image model {model} not found (404), trying next")
+                        model_not_found = True
+                        break
+                    if resp.status_code >= 400:
+                        err = resp.text[:400] if resp.text else ""
+                        _log(
+                            f"Gemini image HTTP {resp.status_code} on {model} "
+                            f"modalities={modalities}: {err}",
+                        )
+                        break
+
+                    data = resp.json()
+                    img_b64, _mime = _gemini_response_first_image_b64(data)
+                    if not img_b64:
+                        fb = data.get("promptFeedback") or data.get("prompt_feedback")
+                        _log(
+                            f"Gemini image {model}: no inline image; feedback={fb}",
+                        )
+                        break
+
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_bytes(base64.b64decode(img_b64))
+                    if output_path.exists() and output_path.stat().st_size > 500:
+                        _track_api("gemini_image", cost_estimate=0.04)
+                        return str(output_path)
+                    return None
+
+                except requests.exceptions.HTTPError as e:
+                    _log(f"Gemini image API error ({model}): {e}")
+                    if attempt < 2:
+                        time.sleep(3)
+                except Exception as e:
+                    _log(f"Gemini image error ({model}): {e}")
+                    break
+
+        if model_not_found:
+            continue
+
+    return None
+
+
+def _meta_ai_style_extra() -> str:
+    """Optional prompt bias toward short-form / Meta-style AI polish (env IMAGE_STYLE_PROFILE)."""
+    prof = (os.environ.get("IMAGE_STYLE_PROFILE") or "").strip().lower()
+    if prof in ("meta", "meta-ai", "meta_ai", "social", "feed"):
+        return (
+            "Social short-form polish: bold readable composition, vivid balanced colors, "
+            "clean negative space, modern AI-video look with soft cinematic depth. "
+        )
+    return ""
+
 
 # ---------------------------------------------------------------------------
 # Google Cloud TTS
@@ -1402,7 +1538,7 @@ def step_tts(text: str, output_path: Path, language: str = "english") -> str | N
 
 
 # ---------------------------------------------------------------------------
-# Image generation (Google Imagen)
+# Image generation (Gemini native / Nano Banana, or Imagen)
 # ---------------------------------------------------------------------------
 
 def step_fetch_images(
@@ -1418,8 +1554,31 @@ def step_fetch_images(
         _log("No GOOGLE_API_KEY — cannot generate images")
         return []
 
+    backend = (os.environ.get("IMAGE_BACKEND") or "gemini").strip().lower()
+    if backend not in ("gemini", "imagen", "auto"):
+        _log(f"IMAGE_BACKEND={backend!r} invalid — use gemini, imagen, or auto; defaulting to gemini")
+        backend = "gemini"
+
     parallel = max(1, min(8, int(os.environ.get("IMAGEN_PARALLEL", "3"))))
-    _log(f"Generating images via Google Imagen (parallel={parallel})...")
+    _log(
+        f"Generating images (backend={backend}, parallel={parallel}) — "
+        f"Gemini native = Nano Banana family when backend=gemini",
+    )
+
+    def _generate_still(image_prompt: str, out: Path) -> str | None:
+        if backend == "imagen":
+            return _google_imagen_generate(image_prompt, out, aspect_ratio="16:9")
+        if backend == "gemini":
+            return _google_gemini_native_image_generate(
+                image_prompt, out, aspect_ratio="16:9",
+            )
+        # auto: prefer Gemini image, then Imagen
+        r = _google_gemini_native_image_generate(
+            image_prompt, out, aspect_ratio="16:9",
+        )
+        return r or _google_imagen_generate(image_prompt, out, aspect_ratio="16:9")
+
+    meta_extra = _meta_ai_style_extra()
 
     def _one_scene(i: int, scene: dict[str, Any]) -> tuple[int, str | None]:
         out = output_dir / f"scene_{i:02d}.png"
@@ -1429,11 +1588,13 @@ def step_fetch_images(
 
         if "2d" not in image_prompt.lower() and "illustrat" not in image_prompt.lower() and "oil" not in image_prompt.lower():
             image_prompt = f"{IMAGE_STYLE_PREFIX}{image_prompt}"
+        if meta_extra and meta_extra.lower() not in image_prompt.lower():
+            image_prompt = f"{meta_extra}{image_prompt}"
 
-        _log(f"Scene {i+1}/{len(scene_plan)}: queued Imagen")
-        result_path = _google_imagen_generate(image_prompt, out, aspect_ratio="16:9")
+        _log(f"Scene {i+1}/{len(scene_plan)}: queued image ({backend})")
+        result_path = _generate_still(image_prompt, out)
         if not result_path:
-            _log(f"Scene {i+1}: Imagen failed — no image obtained")
+            _log(f"Scene {i+1}: image generation failed — no image obtained")
         return i, result_path
 
     total = len(scene_plan)
