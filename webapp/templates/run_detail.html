@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block content %}
+
+<section class="card">
+  <div class="run-header">
+    <div>
+      <h1>{{ run.get("title", "Pipeline Run") }}</h1>
+      <p class="muted">
+        Pipeline: <b>{{ run.pipelineName | replace("-", " ") | title }}</b>
+        &nbsp;&middot;&nbsp; Project: <b>{{ run.projectId }}</b>
+      </p>
+    </div>
+    <div>
+      {% if run.status == "completed" %}
+        <span class="badge badge-ok badge-lg">Completed</span>
+      {% elif run.status == "running" %}
+        <span class="badge badge-info badge-lg" id="status-badge">Running</span>
+      {% elif run.status == "queued" %}
+        <span class="badge badge-lg" id="status-badge">Queued</span>
+      {% elif run.status == "cancelled" %}
+        <span class="badge badge-danger badge-lg">Cancelled</span>
+      {% elif run.status == "failed" %}
+        <span class="badge badge-danger badge-lg">Failed</span>
+      {% else %}
+        <span class="badge badge-lg">{{ run.status }}</span>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- Progress bar (shown for running/queued) -->
+{% if run.status in ["running", "queued"] %}
+<section class="card" id="progress-section">
+  <h2>Progress</h2>
+  <div class="progress-bar-container">
+    <div class="progress-bar-fill" id="progress-fill" style="width: {{ run.get('progress', 0) }}%"></div>
+  </div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+    <p class="muted" id="progress-text">{{ run.get('progress', 0) }}% — Processing your video...</p>
+    <div style="display:flex;align-items:center;gap:12px">
+      <p class="muted" id="eta-text"></p>
+      <button class="btn btn-danger btn-sm" id="cancel-btn" onclick="cancelRun()">Cancel</button>
+    </div>
+  </div>
+  {% if pipeline_stages %}
+  <p class="muted" style="margin:12px 0 4px;font-size:0.85rem">Stages</p>
+  <ul class="pipeline-stage-list" id="stage-list">
+    {% for sid, label in pipeline_stages %}
+    <li data-stage="{{ sid }}" class="stage-row stage-pending">
+      <span class="stage-dot" aria-hidden="true"></span>
+      <span class="stage-name">{{ label }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
+
+<!-- Video Preview + Download (shown when completed) -->
+{% if video_available %}
+<section class="card">
+  <h2>Output Video</h2>
+  <div class="video-preview">
+    <video id="video-player" controls preload="metadata" style="width:100%;max-width:960px;border-radius:8px;background:#000">
+      <source src="/preview/run/{{ run._id }}" type="video/mp4">
+      Your browser does not support video playback.
+    </video>
+  </div>
+  <div style="margin-top:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <a href="/download/run/{{ run._id }}" class="btn btn-primary">Download Video</a>
+    {% if images_zip_available %}
+    <a href="/download/run/{{ run._id }}/images" class="btn btn-secondary">Download Images (ZIP)</a>
+    {% endif %}
+    <span class="muted">Auto-cleanup in 48 hours</span>
+  </div>
+</section>
+{% endif %}
+
+<!-- Details -->
+<section class="card">
+  <h2>Run Details</h2>
+  <div class="detail-grid">
+    <div class="detail-label">Created</div>
+    <div>{{ run.createdAt.strftime('%Y-%m-%d %H:%M:%S UTC') if run.createdAt else '-' }}</div>
+
+    <div class="detail-label">Started</div>
+    <div>{{ run.startedAt.strftime('%Y-%m-%d %H:%M:%S UTC') if run.get("startedAt") else '-' }}</div>
+
+    <div class="detail-label">Completed</div>
+    <div>{{ run.completedAt.strftime('%Y-%m-%d %H:%M:%S UTC') if run.get("completedAt") else '-' }}</div>
+
+    {% if run.get("creditsCharged") %}
+    <div class="detail-label">Credits Charged</div>
+    <div>{{ run.creditsCharged }}</div>
+    {% endif %}
+
+    {% if run.get("referenceUrl") %}
+    <div class="detail-label">Reference URL</div>
+    <div><a href="{{ run.referenceUrl }}" target="_blank" rel="noopener">{{ run.referenceUrl }}</a></div>
+    {% endif %}
+
+    {% if run.get("audioLanguage") %}
+    <div class="detail-label">Audio Language</div>
+    <div>{{ run.audioLanguage | capitalize }}</div>
+    {% endif %}
+
+    {% if run.get("subtitleLanguage") %}
+    <div class="detail-label">Subtitle Language</div>
+    <div>{{ run.subtitleLanguage | capitalize }}</div>
+    {% endif %}
+  </div>
+</section>
+
+<!-- Prompt -->
+<section class="card">
+  <h2>Prompt</h2>
+  <pre class="log-block">{{ run.get("prompt", "-") }}</pre>
+</section>
+
+<!-- Error -->
+{% if run.get("error") %}
+<section class="card">
+  <h2>Error</h2>
+  <pre class="log-block log-error">{{ run.error }}</pre>
+</section>
+{% endif %}
+
+<!-- Logs -->
+{% if run.get("stdout") %}
+<section class="card">
+  <h2>Output Log</h2>
+  <pre class="log-block">{{ run.stdout[-8000:] }}</pre>
+</section>
+{% endif %}
+
+{% if run.get("stderr") %}
+<section class="card">
+  <h2>Error Log</h2>
+  <pre class="log-block log-error">{{ run.stderr[-4000:] }}</pre>
+</section>
+{% endif %}
+
+<a href="/dashboard" class="btn btn-secondary">&larr; Back to Dashboard</a>
+
+{% if run.status in ["running", "queued"] %}
+<script>
+function cancelRun() {
+  if (!confirm("Are you sure you want to cancel this video? Credits will be refunded.")) return;
+  const btn = document.getElementById("cancel-btn");
+  btn.disabled = true;
+  btn.textContent = "Cancelling...";
+  fetch("/api/run/{{ run._id }}/cancel", { method: "POST" })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === "cancelled") location.reload();
+      else { alert("Failed to cancel: " + (data.detail || "Unknown error")); btn.disabled = false; btn.textContent = "Cancel"; }
+    })
+    .catch(() => { alert("Network error"); btn.disabled = false; btn.textContent = "Cancel"; });
+}
+
+(function() {
+  const runId = "{{ run._id }}";
+  const fill = document.getElementById("progress-fill");
+  const text = document.getElementById("progress-text");
+  const badge = document.getElementById("status-badge");
+  const section = document.getElementById("progress-section");
+  const etaText = document.getElementById("eta-text");
+  const stageList = document.getElementById("stage-list");
+
+  const initialSnap = {{ (run.get("progressSnapshot") or {}) | tojson }};
+
+  function applyProgressSnapshot(snap) {
+    if (!snap || !stageList) return;
+    const done = new Set(snap.completed || []);
+    const cur = snap.current || null;
+    stageList.querySelectorAll("li[data-stage]").forEach(function(li) {
+      const id = li.getAttribute("data-stage");
+      li.classList.remove("stage-done", "stage-current", "stage-pending");
+      if (done.has(id)) li.classList.add("stage-done");
+      else if (cur && id === cur) li.classList.add("stage-current");
+      else li.classList.add("stage-pending");
+    });
+  }
+  applyProgressSnapshot(initialSnap);
+
+  const labels = {
+    5: "Starting pipeline...",
+    10: "Discovering tools...",
+    12: "Downloading reference video...",
+    15: "Analyzing reference video...",
+    17: "Analyzing visual style...",
+    20: "Parsing production intent...",
+    25: "Transcribing audio with timestamps...",
+    30: "Transcription complete...",
+    35: "Generating narration script...",
+    38: "Script ready...",
+    40: "Extracting characters & scenes...",
+    44: "Generating scene plan...",
+    48: "Scene plan ready...",
+    50: "Translating subtitles...",
+    54: "Generating narration audio (TTS)...",
+    56: "Narration ready...",
+    58: "Generating AI images (Imagen)...",
+    60: "Creating scene visuals...",
+    75: "Scene images ready...",
+    88: "Rendering video with Ken Burns...",
+    92: "Applying transitions...",
+    95: "Composing final video...",
+    97: "Running verification...",
+    100: "Video complete!"
+  };
+
+  function getLabel(pct) {
+    let best = "Processing...";
+    let bestKey = 0;
+    for (const [k, v] of Object.entries(labels)) {
+      if (parseInt(k) <= pct && parseInt(k) >= bestKey) {
+        best = v;
+        bestKey = parseInt(k);
+      }
+    }
+    return best;
+  }
+
+  function poll() {
+    fetch("/api/run/" + runId + "/progress")
+      .then(r => r.json())
+      .then(data => {
+        const pct = data.progress || 0;
+        if (fill) fill.style.width = pct + "%";
+        if (data.progressSnapshot) applyProgressSnapshot(data.progressSnapshot);
+        const stageHint = (data.progressSnapshot && data.progressSnapshot.current && data.progressSnapshot.stageLabels && data.progressSnapshot.stageLabels[data.progressSnapshot.current])
+          ? data.progressSnapshot.stageLabels[data.progressSnapshot.current]
+          : getLabel(pct);
+        if (text) text.textContent = pct + "% \u2014 " + stageHint;
+
+        if (etaText) {
+          const elapsed = data.elapsedSeconds || 0;
+          const eta = data.eta || "";
+          let parts = [];
+          if (elapsed > 0) {
+            if (elapsed > 60) parts.push(Math.floor(elapsed/60) + "m " + Math.floor(elapsed%60) + "s elapsed");
+            else parts.push(Math.floor(elapsed) + "s elapsed");
+          }
+          if (eta) parts.push(eta);
+          etaText.textContent = parts.join(" \u2022 ");
+        }
+
+        if (data.status === "completed" || data.status === "failed") {
+          location.reload();
+          return;
+        }
+        setTimeout(poll, 3000);
+      })
+      .catch(() => setTimeout(poll, 5000));
+  }
+
+  setTimeout(poll, 2000);
+})();
+</script>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- Hero -->
+<section class="hero">
+  <h1>AeganMedia<span class="accent">Montage</span></h1>
+  <p class="hero-sub">AI-powered video production platform. Upload your audio, provide a reference video, and let Google AI create stunning videos with matching visuals, narration, and subtitles.</p>
+  <div class="hero-actions">
+    {% if current_user %}
+      <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
+    {% else %}
+      <a href="/signup" class="btn btn-primary">Get Started</a>
+      <a href="/login" class="btn btn-outline">Login</a>
+    {% endif %}
+  </div>
+</section>
+
+<!-- How It Works -->
+<section class="card">
+  <h2>How It Works</h2>
+  <div class="steps-grid">
+    <div class="step">
+      <div class="step-num">1</div>
+      <h3>Describe or Upload</h3>
+      <p>Write a prompt, paste a reference video URL, or upload your own audio narration.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <h3>AI Analyzes</h3>
+      <p>Gemini transcribes your audio, extracts characters and scenes, and analyzes the reference video style.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <h3>Images Generated</h3>
+      <p>Google Imagen creates character-consistent visuals matched to each sentence of your audio.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <h3>Video Composed</h3>
+      <p>FFmpeg assembles scenes with Ken Burns motion, smooth transitions, and audio-synced timing.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Capabilities -->
+<section class="card">
+  <h2>Powered by Google AI</h2>
+  <div class="cap-grid">
+    <div class="cap-card">
+      <h3>Gemini AI</h3>
+      <p>Script generation, scene planning, audio transcription with timestamps, character extraction, intent parsing, subtitle translation, and post-creation verification.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Google Imagen</h3>
+      <p>AI image generation with character-consistent visuals. Each scene gets a detailed prompt with matching art style, characters, and locations.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Google Cloud TTS</h3>
+      <p>Professional narration in 30+ languages including Tamil, Hindi, Telugu, Kannada, Malayalam, Bengali, and more Indian languages.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Reference Video Matching</h3>
+      <p>Paste a YouTube URL and the AI analyzes its art style, editing approach, color palette, and mood to create similar content.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Audio-Synced Timing</h3>
+      <p>Sentence-level timestamps ensure each image appears exactly when its corresponding audio plays. Frame-by-frame precision.</p>
+    </div>
+    <div class="cap-card">
+      <h3>Multi-Language Subtitles</h3>
+      <p>Optional subtitles in any language. Gemini translates narration to your chosen subtitle language with natural phrasing.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Video Creation Modes -->
+<section class="card">
+  <h2>Video Creation Modes</h2>
+  <p class="muted">Two ways to create AI-powered videos. All processing uses Google AI (Gemini + Imagen 4 + Cloud TTS).</p>
+  <div class="pipeline-grid">
+    <div class="pipeline-card">
+      <div class="pipeline-header">
+        <h3>AI Video Creator</h3>
+        <span class="badge badge-ok">Production</span>
+      </div>
+      <p>Describe your topic and the AI generates the full video: script writing, AI image generation, narration, Ken Burns effects, crossfade transitions, and optional subtitles.</p>
+    </div>
+    <div class="pipeline-card">
+      <div class="pipeline-header">
+        <h3>Cinematic (Audio + Reference)</h3>
+        <span class="badge badge-ok">Production</span>
+      </div>
+      <p>Upload your audio file and an optional reference video URL. The AI transcribes sentence-by-sentence, extracts characters &amp; scenes, generates matching images, and composes a cinematic video synced to your audio timing.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Try These Prompts -->
+<section class="card">
+  <h2>Try These Prompts</h2>
+  <div class="prompt-grid">
+    <div class="prompt-card">
+      <span class="prompt-tag">Audio Upload</span>
+      <p>"Upload a Tamil story audio and a YouTube reference video. The AI creates matching visuals frame-by-frame."</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Reference Video</span>
+      <p>"Here's a YouTube Short I love. Make me something like this, but about quantum computing."</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Explainer</span>
+      <p>"Make a 60-second animated explainer about how neural networks learn, with English subtitles."</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Cinematic</span>
+      <p>"Create a cinematic 30-second trailer: humanity receives a warning from 1000 years in the future."</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Education</span>
+      <p>"Create a 60-second video about the history of the internet, with Hindi narration and English subtitles."</p>
+    </div>
+    <div class="prompt-card">
+      <span class="prompt-tag">Story</span>
+      <p>"Upload a children's story audio. The AI identifies characters, creates consistent character images, and builds the video."</p>
+    </div>
+  </div>
+</section>
+
+<!-- Tech Stack -->
+<section class="card">
+  <h2>Technology Stack</h2>
+  <div class="providers-row">
+    <div>
+      <h3>AI Engine</h3>
+      <p class="muted">Google Gemini 2.0 Flash — script, scenes, transcription, character analysis, verification</p>
+    </div>
+    <div>
+      <h3>Image Generation</h3>
+      <p class="muted">Google Imagen 3.0 — character-consistent AI images in any art style</p>
+    </div>
+    <div>
+      <h3>Voice</h3>
+      <p class="muted">Google Cloud TTS — 30+ languages, 700+ voices, Studio quality</p>
+    </div>
+    <div>
+      <h3>Composition</h3>
+      <p class="muted">FFmpeg — Ken Burns motion, crossfade transitions, audio mixing, subtitle burn-in</p>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+{% if not current_user %}
+<section class="hero cta-section">
+  <h2>Ready to Create?</h2>
+  <p>Sign up and start producing professional videos with Google AI.</p>
+  <a href="/signup" class="btn btn-primary">Get Started Free</a>
+</section>
+{% endif %}
+
+{% endblock %}

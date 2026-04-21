@@ -3,3 +3,25 @@ pyyaml>=6.0
 pydantic>=2.0
 jsonschema>=4.20
 python-dotenv>=1.0
+requests>=2.31
+
+# Web app
+fastapi>=0.115
+uvicorn>=0.30
+jinja2>=3.1
+python-multipart>=0.0.9
+pymongo>=4.8
+passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1
+certifi>=2024.0.0
+PyJWT>=2.9
+
+# Pipeline runner tools
+yt-dlp>=2024.0
+Pillow>=10.0
+numpy>=1.24
+
+# Google Speech-to-Text (word-level timestamp transcription)
+# Provides measured ±50ms word offsets vs Gemini's estimated ±1-2s sentence timing.
+# Requires "Cloud Speech-to-Text API" enabled in your Google Cloud project.
+google-cloud-speech>=2.26

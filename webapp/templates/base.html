@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ app_name }}</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <img src="/static/img/logoText.svg" alt="Aegan Media" />
+    </a>
+    <nav>
+      <a href="/" class="{% if request.url.path == '/' %}nav-active{% endif %}">Home</a>
+      {% if current_user %}
+        <a href="/dashboard" class="{% if request.url.path == '/dashboard' %}nav-active{% endif %}">Dashboard</a>
+        {% if current_user.role in ["admin", "manager"] %}
+          <a href="/admin-dashboard" class="{% if request.url.path == '/admin-dashboard' %}nav-active{% endif %}">Admin</a>
+        {% endif %}
+        <form method="post" action="/logout" class="inline-form">
+          <button type="submit">Logout</button>
+        </form>
+      {% else %}
+        <a href="/login" class="{% if request.url.path == '/login' %}nav-active{% endif %}">Login</a>
+        <a href="/signup" class="{% if request.url.path == '/signup' %}nav-active{% endif %}">Sign Up</a>
+      {% endif %}
+    </nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-grid">
+        <!-- Brand -->
+        <div class="footer-brand">
+          <a href="/">
+            <img src="/static/img/logoText.svg" alt="Aegan Media" class="footer-logo" />
+          </a>
+          <p class="footer-tagline">AI-powered video production platform by Aegan Media. Turn audio and ideas into professional videos with Google AI — Gemini, Imagen, and Cloud TTS.</p>
+          <div class="footer-social">
+            <a href="https://www.instagram.com/aeganmedia/" target="_blank" rel="noopener" aria-label="Instagram" class="social-link">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.5" fill="currentColor" stroke="none"/></svg>
+            </a>
+            <a href="https://www.linkedin.com/company/aeganmedia/" target="_blank" rel="noopener" aria-label="LinkedIn" class="social-link">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-4 0v7h-4v-7a6 6 0 0 1 6-6z"/><rect x="2" y="9" width="4" height="12"/><circle cx="4" cy="4" r="2"/></svg>
+            </a>
+            <a href="https://www.youtube.com/@aeganmedia" target="_blank" rel="noopener" aria-label="YouTube" class="social-link">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.94 2C5.12 20 12 20 12 20s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"/><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02" fill="currentColor" stroke="none"/></svg>
+            </a>
+            <a href="https://www.facebook.com/aeganmedia/" target="_blank" rel="noopener" aria-label="Facebook" class="social-link">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>
+            </a>
+            <a href="https://x.com/aeganmedia" target="_blank" rel="noopener" aria-label="X / Twitter" class="social-link">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l6.6 8.5M20 20l-6.6-8.5m0 0L20 4M10.6 12.5L4 20"/></svg>
+            </a>
+          </div>
+        </div>
+        <!-- Quick Links -->
+        <div class="footer-links">
+          <h4>Platform</h4>
+          <ul>
+            <li><a href="/">Home</a></li>
+            <li><a href="/login">Login</a></li>
+            <li><a href="/signup">Sign Up</a></li>
+            <li><a href="/dashboard">Dashboard</a></li>
+          </ul>
+        </div>
+        <!-- Features -->
+        <div class="footer-links">
+          <h4>Features</h4>
+          <ul>
+            <li><a href="/signup">Audio-to-Video</a></li>
+            <li><a href="/signup">Reference Matching</a></li>
+            <li><a href="/signup">AI Image Generation</a></li>
+            <li><a href="/signup">Multi-Language TTS</a></li>
+            <li><a href="/signup">Subtitle Translation</a></li>
+          </ul>
+        </div>
+        <!-- Parent Company -->
+        <div class="footer-links">
+          <h4>Aegan Media</h4>
+          <ul>
+            <li><a href="https://www.aeganmedia.com" target="_blank" rel="noopener">Main Website</a></li>
+            <li><a href="https://www.aeganmedia.com/#services" target="_blank" rel="noopener">Services</a></li>
+            <li><a href="https://www.aeganmedia.com/#works" target="_blank" rel="noopener">Our Works</a></li>
+            <li><a href="https://www.aeganmedia.com/#contact" target="_blank" rel="noopener">Contact Us</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2026 <a href="https://www.aeganmedia.com" target="_blank" rel="noopener">Aegan Media</a>. All rights reserved. &middot; Powered by <a href="/">OpenMontage</a></p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

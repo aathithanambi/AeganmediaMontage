@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- User info bar -->
+<section class="card dash-header">
+  <div class="dash-info">
+    <h1>Dashboard</h1>
+    <p>
+      Role: <b>{{ current_user.role | capitalize }}</b>
+      {% if current_user.role in ["admin", "manager"] %}
+        &nbsp;&middot;&nbsp; <span class="badge badge-ok">Unlimited Access</span>
+      {% elif not current_user.get("isApproved", False) %}
+        &nbsp;&middot;&nbsp; <span class="badge badge-danger">Pending Approval</span>
+      {% elif current_user.get("credits", 0) > 0 %}
+        &nbsp;&middot;&nbsp; Credits: <b>{{ current_user.credits }}</b>
+        <span class="muted">({{ credit_cost }} per project)</span>
+        &nbsp;&middot;&nbsp; <span class="badge badge-info">Paid Tier</span>
+      {% else %}
+        &nbsp;&middot;&nbsp; Credits: <b>0</b>
+        <span class="muted">(Free tier)</span>
+        &nbsp;&middot;&nbsp; <span class="badge">Free Tier</span>
+      {% endif %}
+    </p>
+  </div>
+</section>
+
+<!-- Create Project -->
+<section class="card">
+  <h2>Create Project</h2>
+  {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}
+    <div class="alert alert-warn" style="background:rgba(220,53,69,0.08);border-color:rgba(220,53,69,0.3)">
+      <b>Account Pending Approval</b> &mdash; An admin must approve your account before you can create videos.
+      Please wait for approval or contact the administrator.
+    </div>
+  {% elif current_user.role not in ["admin", "manager"] and current_user.get("credits", 0) <= 0 %}
+    <div class="alert alert-warn">
+      You are on the <b>Free Tier</b> ({{ settings.free_tier_max_runs if settings else 1 }} video, max {{ settings.free_tier_max_duration if settings else 10 }}s).
+      Contact an admin or manager to get credits for more videos.
+    </div>
+  {% endif %}
+  <form method="post" action="/dashboard/create-project" enctype="multipart/form-data" class="create-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="pipeline_name">Pipeline</label>
+        <select name="pipeline_name" id="pipeline_name" required>
+          {% for p in pipelines %}
+            <option value="{{ p.name }}"
+              {% if p.name == "animated-explainer" %}selected{% endif %}
+            >{% if p.name == "animated-explainer" %}AI Video Creator{% elif p.name == "cinematic" %}Cinematic (Audio + Reference){% else %}{{ p.name | replace("-", " ") | title }}{% endif %}</option>
+          {% endfor %}
+        </select>
+        <p class="muted" style="font-size:0.82rem;margin-top:4px" id="pipeline-hint"></p>
+      </div>
+      <div class="form-group">
+        <label for="title">Project Title</label>
+        <input type="text" name="title" id="title" placeholder="My video project" required />
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="prompt">Prompt / Description</label>
+      <textarea name="prompt" id="prompt" rows="4" placeholder="Describe the video you want to create. You can also paste a YouTube URL as reference..." required></textarea>
+    </div>
+    <div class="form-group">
+      <label for="reference_url">Reference Video URL <span class="muted">(optional &mdash; YouTube, TikTok, Reel, or any video URL)</span></label>
+      <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." />
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="audio_language">Audio / Narration Language</label>
+        <select name="audio_language" id="audio_language">
+          <option value="">Auto-detect from prompt</option>
+          <option value="english">English</option>
+          <option value="tamil">Tamil (தமிழ்)</option>
+          <option value="hindi">Hindi (हिन्दी)</option>
+          <option value="telugu">Telugu (తెలుగు)</option>
+          <option value="kannada">Kannada (ಕನ್ನಡ)</option>
+          <option value="malayalam">Malayalam (മലയാളം)</option>
+          <option value="bengali">Bengali (বাংলা)</option>
+          <option value="marathi">Marathi (मराठी)</option>
+          <option value="gujarati">Gujarati (ગુજરાતી)</option>
+          <option value="punjabi">Punjabi (ਪੰਜਾਬੀ)</option>
+          <option value="urdu">Urdu (اردو)</option>
+          <option value="spanish">Spanish (Español)</option>
+          <option value="french">French (Français)</option>
+          <option value="german">German (Deutsch)</option>
+          <option value="japanese">Japanese (日本語)</option>
+          <option value="korean">Korean (한국어)</option>
+          <option value="arabic">Arabic (العربية)</option>
+          <option value="portuguese">Portuguese (Português)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="enable_subtitles">Enable Subtitles</label>
+        <select name="enable_subtitles" id="enable_subtitles">
+          <option value="no" selected>No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row" id="subtitle-options" style="display:none">
+      <div class="form-group">
+        <label for="subtitle_language">Subtitle Language</label>
+        <select name="subtitle_language" id="subtitle_language">
+          <option value="">Same as audio</option>
+          <option value="english">English</option>
+          <option value="tamil">Tamil (தமிழ்)</option>
+          <option value="hindi">Hindi (हिन्दी)</option>
+          <option value="telugu">Telugu (తెలుగు)</option>
+          <option value="kannada">Kannada (ಕನ್ನಡ)</option>
+          <option value="malayalam">Malayalam (മലയാളം)</option>
+          <option value="bengali">Bengali (বাংলা)</option>
+          <option value="marathi">Marathi (मराठी)</option>
+          <option value="gujarati">Gujarati (ગુજરાતી)</option>
+          <option value="punjabi">Punjabi (ਪੰਜਾਬੀ)</option>
+          <option value="urdu">Urdu (اردو)</option>
+          <option value="spanish">Spanish (Español)</option>
+          <option value="french">French (Français)</option>
+          <option value="german">German (Deutsch)</option>
+          <option value="japanese">Japanese (日本語)</option>
+          <option value="korean">Korean (한국어)</option>
+          <option value="arabic">Arabic (العربية)</option>
+          <option value="portuguese">Portuguese (Português)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="enable_music">Background Music</label>
+        <select name="enable_music" id="enable_music">
+          <option value="no" selected>No</option>
+          <option value="yes">Yes (coming soon)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="audio_file">Custom Audio / Voiceover <span class="muted">(optional &mdash; MP3, WAV, M4A, up to 50 MB)</span></label>
+      <input type="file" name="audio_file" id="audio_file" accept=".mp3,.wav,.m4a,.ogg,.aac,.flac" />
+      <p class="muted" style="font-size:0.82rem;margin-top:4px">
+        Upload your own narration or audio track. The pipeline will transcribe it sentence-by-sentence, extract characters and scenes, and create visuals that match your audio word-by-word.
+      </p>
+    </div>
+    <button type="submit" class="btn btn-primary"
+      {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}disabled title="Account pending admin approval"
+      {% elif current_user.role not in ["admin", "manager"] and current_user.get("credits", 0) <= 0 %}{% endif %}>
+      {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}
+        Pending Approval
+      {% else %}
+        Create Project
+      {% endif %}
+      {% if current_user.role not in ["admin", "manager"] %}({{ credit_cost }} credit){% endif %}
+    </button>
+  </form>
+</section>
+
+<!-- Pipeline Runs -->
+<section class="card">
+  <h2>My Pipeline Runs</h2>
+  {% if runs %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Pipeline</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in runs %}
+        <tr>
+          <td>{{ run.pipelineName | replace("-", " ") | title }}</td>
+          <td><a href="/dashboard/run/{{ run.id }}">{{ run.title }}</a></td>
+          <td>
+            {% if run.status == "completed" %}
+              <span class="badge badge-ok">Completed</span>
+            {% elif run.status == "running" %}
+              <span class="badge badge-info">Running</span>
+            {% elif run.status == "queued" %}
+              <span class="badge">Queued</span>
+            {% elif run.status == "cancelled" %}
+              <span class="badge badge-danger">Cancelled</span>
+            {% elif run.status == "failed" %}
+              <span class="badge badge-danger">Failed</span>
+            {% else %}
+              <span class="badge">{{ run.status }}</span>
+            {% endif %}
+          </td>
+          <td>{{ run.createdAt.strftime('%Y-%m-%d %H:%M') if run.createdAt else '-' }}</td>
+          <td>
+            {% if run.outputVideoPath %}
+              <a href="/download/run/{{ run.id }}" class="btn btn-primary btn-sm">Download</a>
+            {% elif run.status in ["queued", "running"] %}
+              <a href="/dashboard/run/{{ run.id }}" class="btn btn-sm" style="margin-right:4px">View</a>
+              <button class="btn btn-danger btn-sm" onclick="cancelFromDash('{{ run.id }}', this)">Cancel</button>
+            {% elif run.status == "failed" %}
+              <a href="/dashboard/run/{{ run.id }}" class="muted">View Error</a>
+            {% elif run.status == "cancelled" %}
+              <span class="muted">Cancelled</span>
+            {% else %}
+              <span class="muted">Pending</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No pipeline runs yet. Create your first project above.</p>
+  {% endif %}
+</section>
+
+<!-- Processed Videos -->
+<section class="card">
+  <h2>My Videos</h2>
+  {% if jobs %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Expires</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>{{ job.projectId }}</td>
+          <td>{{ job.title }}</td>
+          <td>
+            {% if job.videoExists %}
+              <span class="badge badge-ok">Available</span>
+            {% elif job.status == "deleted" %}
+              <span class="badge">Expired</span>
+            {% else %}
+              <span class="badge">{{ job.status }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if job.expiresAt %}
+              {{ job.expiresAt.strftime('%Y-%m-%d %H:%M') if job.expiresAt else '-' }}
+            {% else %}
+              -
+            {% endif %}
+          </td>
+          <td>
+            {% if job.videoExists %}
+              <a href="/download/{{ job.id }}" class="btn btn-primary btn-sm">Download</a>
+            {% else %}
+              <span class="muted">Deleted (metadata kept)</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No processed videos yet.</p>
+  {% endif %}
+</section>
+
+<!-- Edit Profile -->
+<section class="card">
+  <h2>Edit Profile</h2>
+  <form method="post" action="/profile" class="create-form">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="email" name="email" id="email" value="{{ current_user.email }}" required />
+      </div>
+      <div class="form-group">
+        <label for="password">New Password <span class="muted">(optional)</span></label>
+        <input type="password" name="password" id="password" />
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">Save Profile</button>
+  </form>
+</section>
+
+<script>
+(function(){
+  var hints = {
+    "animated-explainer": "Describe your topic — Google AI generates the script, images (Imagen 4), narration (Cloud TTS), and composes the full video with transitions.",
+    "cinematic": "Upload your audio file + optional reference video URL — AI transcribes, extracts characters & scenes, generates matching images, and composes a cinematic video synced to your audio.",
+  };
+  var sel = document.getElementById("pipeline_name");
+  var hint = document.getElementById("pipeline-hint");
+  if(!sel || !hint) return;
+  function update(){ hint.textContent = hints[sel.value] || ""; }
+  sel.addEventListener("change", update);
+  update();
+
+  var subToggle = document.getElementById("enable_subtitles");
+  var subOptions = document.getElementById("subtitle-options");
+  if(subToggle && subOptions){
+    function toggleSubOpts(){
+      subOptions.style.display = subToggle.value === "yes" ? "" : "none";
+    }
+    subToggle.addEventListener("change", toggleSubOpts);
+    toggleSubOpts();
+  }
+})();
+
+function cancelFromDash(runId, btn) {
+  if (!confirm("Cancel this video? Credits will be refunded.")) return;
+  btn.disabled = true;
+  btn.textContent = "Cancelling...";
+  fetch("/api/run/" + runId + "/cancel", { method: "POST" })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.status === "cancelled") location.reload();
+      else { alert("Failed: " + (data.detail || "Unknown error")); btn.disabled = false; btn.textContent = "Cancel"; }
+    })
+    .catch(function() { alert("Network error"); btn.disabled = false; btn.textContent = "Cancel"; });
+}
+</script>
+{% endblock %}

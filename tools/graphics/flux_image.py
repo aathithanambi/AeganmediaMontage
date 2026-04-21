@@ -62,8 +62,8 @@ class FluxImage(BaseTool):
             "height": {"type": "integer", "default": 1024},
             "model": {
                 "type": "string",
-                "enum": ["flux-pro/v1.1", "flux/dev", "flux-pro"],
-                "default": "flux-pro/v1.1",
+                "enum": ["flux/dev", "flux-pro/v1.1", "flux-pro", "flux/schnell"],
+                "default": "flux/dev",
             },
             "seed": {"type": "integer"},
             "num_inference_steps": {"type": "integer"},
@@ -89,10 +89,10 @@ class FluxImage(BaseTool):
         return ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
-        model = inputs.get("model", "flux-pro/v1.1")
+        model = inputs.get("model", "flux/dev")
         if "pro" in model:
             return 0.05
-        return 0.03  # dev tier
+        return 0.00  # dev/schnell are free tier on fal.ai
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         api_key = self._get_api_key()
@@ -105,7 +105,7 @@ class FluxImage(BaseTool):
         import requests
 
         start = time.time()
-        model = inputs.get("model", "flux-pro/v1.1")
+        model = inputs.get("model", "flux/dev")
         prompt = inputs["prompt"]
         width = inputs.get("width", 1024)
         height = inputs.get("height", 1024)

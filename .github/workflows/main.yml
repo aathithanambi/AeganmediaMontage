@@ -1,0 +1,222 @@
+name: Deploy AeganMediaMontage
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - working-model-code
+
+jobs:
+  deploy:
+    name: Build and Deploy Container
+    runs-on: ubuntu-22.04
+    environment: development
+    env:
+      IMAGE_NAME: aeganmediamontage-web
+      IMAGE_TAG: ${{ github.run_number }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required GitHub secrets
+        env:
+          HOST_VAL: ${{ secrets.HOST }}
+          USERNAME_VAL: ${{ secrets.USERNAME }}
+          PASSWORD_VAL: ${{ secrets.PASSWORD }}
+          SSH_PORT_VAL: ${{ secrets.SSH_PORT }}
+          JWT_SECRET_VAL: ${{ secrets.JWT_SECRET }}
+          MONGODB_URI_VAL: ${{ secrets.MONGODB_URI }}
+        run: |
+          missing=0
+          [ -z "$HOST_VAL" ] && echo "Missing: HOST" && missing=1
+          [ -z "$USERNAME_VAL" ] && echo "Missing: USERNAME" && missing=1
+          [ -z "$PASSWORD_VAL" ] && echo "Missing: PASSWORD" && missing=1
+          [ -z "$SSH_PORT_VAL" ] && echo "Missing: SSH_PORT" && missing=1
+          [ -z "$JWT_SECRET_VAL" ] && echo "Missing: JWT_SECRET" && missing=1
+          [ -z "$MONGODB_URI_VAL" ] && echo "Missing: MONGODB_URI" && missing=1
+          if [ "$missing" -ne 0 ]; then
+            echo "Configure secrets in Settings > Environments > development"
+            exit 1
+          fi
+
+      - name: Build image
+        run: docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile .
+
+      - name: Export image tar
+        run: |
+          docker save -o ${IMAGE_NAME}-${IMAGE_TAG}.tar ${IMAGE_NAME}:${IMAGE_TAG}
+          chmod 644 ${IMAGE_NAME}-${IMAGE_TAG}.tar
+
+      - name: Verify tar is readable
+        run: |
+          ls -l ${IMAGE_NAME}-${IMAGE_TAG}.tar
+          test -r ${IMAGE_NAME}-${IMAGE_TAG}.tar
+
+      - name: Prepare remote upload directory
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            mkdir -p /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+            chmod 755 /home/${{ secrets.USERNAME }}/aeganmediamontage
+            chmod 700 /home/${{ secrets.USERNAME }}/aeganmediamontage/tmp
+
+      - name: Copy image and scripts to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar,docker/pre-deploy.sh"
+          target: "/home/${{ secrets.USERNAME }}/aeganmediamontage/"
+          overwrite: true
+          tar_tmp_path: "/home/${{ secrets.USERNAME }}/aeganmediamontage/tmp"
+          debug: true
+
+      - name: Stop and remove old containers
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            set -e
+            cd /home/${{ secrets.USERNAME }}/aeganmediamontage
+            chmod +x docker/pre-deploy.sh
+            ./docker/pre-deploy.sh
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          command_timeout: 30m
+          script: |
+            set -e
+            
+            # App deployment directory (can be cleaned on deploy)
+            APP_DIR=/home/${{ secrets.USERNAME }}/aeganmediamontage
+            
+            # PERSISTENT DATA DIRECTORY - NEVER DELETE!
+            # Videos are only removed by the app's auto-cleanup (VIDEO_RETENTION_HOURS)
+            DATA_DIR=/home/${{ secrets.USERNAME }}/aeganmedia-data
+            
+            # Create data directories with write permissions for container
+            # (mkdir -p is safe - doesn't delete existing data)
+            mkdir -p $DATA_DIR/videos
+            mkdir -p $DATA_DIR/projects
+            mkdir -p $DATA_DIR/logs
+            
+            # Ensure directories are writable by container (UID 10001)
+            chmod 777 $DATA_DIR/videos
+            chmod 777 $DATA_DIR/projects
+            
+            echo "Data directory: $DATA_DIR (preserved across deployments)"
+
+            # Write .env file (secrets not echoed to stdout)
+            printf '%s\n' \
+              "APP_NAME=AeganMediaMontage" \
+              "HOST=0.0.0.0" \
+              "PORT=51004" \
+              "JWT_SECRET=${{ secrets.JWT_SECRET }}" \
+              "JWT_EXP_MINUTES=1440" \
+              "MONGODB_URI=${{ secrets.MONGODB_URI }}" \
+              "MONGODB_DB=${{ secrets.MONGODB_DB }}" \
+              "VIDEOS_ROOT=/data/videos" \
+              "VIDEO_RETENTION_HOURS=48" \
+              "INIT_DB_ON_BOOT=${{ secrets.INIT_DB_ON_BOOT }}" \
+              "INIT_SEED_USERS=true" \
+              "SEED_ADMIN_EMAIL=${{ secrets.SEED_ADMIN_EMAIL }}" \
+              "SEED_ADMIN_PASSWORD=${{ secrets.SEED_ADMIN_PASSWORD }}" \
+              "SEED_MANAGER_EMAIL=${{ secrets.SEED_MANAGER_EMAIL }}" \
+              "SEED_MANAGER_PASSWORD=${{ secrets.SEED_MANAGER_PASSWORD }}" \
+              "SEED_USER_EMAIL=${{ secrets.SEED_USER_EMAIL }}" \
+              "SEED_USER_PASSWORD=${{ secrets.SEED_USER_PASSWORD }}" \
+              "PIPELINE_RUN_COMMAND=python -m webapp.pipeline_runner --pipeline {pipeline} --project {project_id} --prompt-file {prompt_file}" \
+              "WORKER_POLL_SECONDS=5" \
+              "WORKER_TIMEOUT_SECONDS=10800" \
+              "CREDIT_COST_PER_RUN=1" \
+              "FREE_TIER_MAX_RUNS=1" \
+              "FREE_TIER_MAX_DURATION=10" \
+              "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
+              > $DATA_DIR/.env
+            chmod 600 $DATA_DIR/.env
+            echo "Environment file written (secrets masked)"
+
+            # Load Docker image
+            docker load -i $APP_DIR/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
+
+            # Run web app
+            docker run -d \
+              --name aeganmediamontage-web \
+              --restart unless-stopped \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 200 \
+              --memory="1g" \
+              --cpus="1.0" \
+              --tmpfs /tmp:size=256M,mode=1777 \
+              --env-file $DATA_DIR/.env \
+              -v $DATA_DIR/videos:/data/videos \
+              -v $DATA_DIR/projects:/app/projects \
+              --log-driver json-file \
+              --log-opt max-size=20m \
+              --log-opt max-file=5 \
+              -p 127.0.0.1:51004:51004 \
+              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
+            # Run worker
+            docker run -d \
+              --name aeganmediamontage-worker \
+              --restart unless-stopped \
+              --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --pids-limit 300 \
+              --memory="2g" \
+              --cpus="2.0" \
+              --tmpfs /tmp:size=512M,mode=1777 \
+              --env-file $DATA_DIR/.env \
+              -v $DATA_DIR/videos:/data/videos \
+              -v $DATA_DIR/projects:/app/projects \
+              --log-driver json-file \
+              --log-opt max-size=20m \
+              --log-opt max-file=5 \
+              ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+              python -m webapp.worker
+
+            # Health check
+            echo "Waiting for app to start..."
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:51004/health >/dev/null 2>&1; then
+                echo "Health check passed!"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "Health check failed."
+                docker logs --tail 100 aeganmediamontage-web || true
+                exit 1
+              fi
+              sleep 2
+            done
+
+            # Cleanup deployment tar file ONLY (never touch DATA_DIR!)
+            rm -f $APP_DIR/${{ env.IMAGE_NAME }}-${{ env.IMAGE_TAG }}.tar
+            rm -rf $APP_DIR/tmp
+
+            echo ""
+            echo "=== Deployment complete! ==="
+            echo "Data preserved at: $DATA_DIR"
+            echo "  - videos/   : User-generated videos (auto-cleanup by VIDEO_RETENTION_HOURS)"
+            echo "  - projects/ : Project files"
+            echo ""
+            docker ps --filter "name=aeganmediamontage"
