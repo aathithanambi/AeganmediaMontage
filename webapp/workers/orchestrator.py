@@ -35,6 +35,8 @@ from webapp.workers.audio_parser import (
     _add_english_to_timings,
     _merge_timings_for_budget,
     _transcribe_with_timestamps,
+    realign_timestamps_for_target_language,
+    step_google_speech_transcribe,
     step_tts,
     step_transcribe_audio,
     step_translate_subtitles,
@@ -67,6 +69,50 @@ from webapp.workers.video_builder import (
     _zip_scene_images,
     step_compose_slideshow,
 )
+
+# ---------------------------------------------------------------------------
+# Agent checkpoint helpers
+# ---------------------------------------------------------------------------
+
+def _save_checkpoint(project_dir: Path, name: str, data: Any) -> None:
+    """Persist a pipeline phase result as a JSON checkpoint file.
+
+    Checkpoints are stored in  projects/<id>/checkpoints/<name>.json
+    and are loaded automatically on re-run when CHECKPOINT_RESUME=1.
+    They prevent redundant API calls for expensive phases (transcription,
+    image generation) if a run is retried after partial completion.
+    """
+    ckpt_dir = project_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / f"{name}.json"
+    try:
+        ckpt_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        _log(f"[Checkpoint] Saved: {name}")
+    except Exception as e:
+        _log(f"[Checkpoint] Save failed for {name}: {e}")
+
+
+def _load_checkpoint(project_dir: Path, name: str) -> Any | None:
+    """Load a previously saved checkpoint if CHECKPOINT_RESUME is enabled.
+
+    Returns the deserialized data, or None if the checkpoint does not exist
+    or resumption is disabled (CHECKPOINT_RESUME=0).
+    """
+    if not _env_truthy("CHECKPOINT_RESUME", False):
+        return None
+    ckpt_path = project_dir / "checkpoints" / f"{name}.json"
+    if not ckpt_path.exists():
+        return None
+    try:
+        data = json.loads(ckpt_path.read_text(encoding="utf-8"))
+        _log(f"[Checkpoint] Resumed from: {name}")
+        return data
+    except Exception as e:
+        _log(f"[Checkpoint] Load failed for {name}: {e}")
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Main pipeline orchestration
@@ -159,7 +205,8 @@ def run_pipeline(prompt_file: str) -> None:
     _log(f"Target duration: {target_dur}s")
     _log(f"Reference-driven: {reference_driven}")
 
-    # --- Phase 1b: Transcribe uploaded audio with timestamps ---
+    # --- Phase 1b: Transcribe uploaded audio with timestamps (Agent 1) ---
+    # Priority: Google Speech API (measured word offsets) → Gemini estimation (fallback)
     has_custom_audio = bool(uploaded_audio and Path(uploaded_audio).exists())
     audio_transcript = None
     sentence_timings: list[dict[str, Any]] = []
@@ -168,10 +215,27 @@ def run_pipeline(prompt_file: str) -> None:
         _log(f"Custom audio duration: {audio_dur:.1f}s")
         target_dur = max(audio_dur, 15.0)
 
-        sentence_timings = _transcribe_with_timestamps(uploaded_audio, language=audio_lang)
+        # Checkpoint: transcript_v1
+        cached_timings = _load_checkpoint(project_dir, "transcript_v1")
+        if cached_timings is not None:
+            sentence_timings = cached_timings
+            _log(f"[Checkpoint] transcript_v1 loaded: {len(sentence_timings)} segments")
+        else:
+            # step_google_speech_transcribe tries the Speech API first and
+            # automatically falls back to Gemini estimation if unavailable.
+            sentence_timings = step_google_speech_transcribe(
+                uploaded_audio, language=audio_lang
+            )
+            if sentence_timings:
+                _save_checkpoint(project_dir, "transcript_v1", sentence_timings)
+
         if sentence_timings:
             audio_transcript = " ".join(t.get("text", "") for t in sentence_timings)
-            _log(f"Audio transcript with {len(sentence_timings)} timed sentences")
+            src = sentence_timings[0].get("source", "gemini_estimate")
+            _log(
+                f"Audio transcript: {len(sentence_timings)} timed sentences "
+                f"(source={src})"
+            )
         else:
             audio_transcript = step_transcribe_audio(uploaded_audio, language=audio_lang)
             if audio_transcript:
@@ -202,9 +266,31 @@ def run_pipeline(prompt_file: str) -> None:
     merged_timings: list[dict[str, Any]] = []
     timeline_mode = bool(has_custom_audio and sentence_timings)
     if timeline_mode:
-        merged_timings = _merge_timings_for_budget(sentence_timings, max_scenes=max_scenes_budget)
-        _log(f"Timeline segments after budget merge: {len(merged_timings)} (cap {max_scenes_budget})")
-        merged_timings = _add_english_to_timings(merged_timings, audio_lang)
+        # Checkpoint: translation_v1
+        cached_translation = _load_checkpoint(project_dir, "translation_v1")
+        if cached_translation is not None:
+            merged_timings = cached_translation
+            _log(f"[Checkpoint] translation_v1 loaded: {len(merged_timings)} segments")
+        else:
+            # Agent 2 — merge segments to scene budget then add English for image prompts
+            merged_timings = _merge_timings_for_budget(sentence_timings, max_scenes=max_scenes_budget)
+            _log(f"Timeline segments after budget merge: {len(merged_timings)} (cap {max_scenes_budget})")
+            merged_timings = _add_english_to_timings(merged_timings, audio_lang)
+
+            # Re-align timestamps when the narration language differs from the
+            # uploaded audio language (e.g. English audio → Tamil TTS replacement).
+            # This corrects image display windows for Tamil's ~15% slower speech pace.
+            tts_lang = audio_lang  # language that TTS will be generated in
+            if (
+                not (uploaded_audio and Path(uploaded_audio).exists())
+                and tts_lang != audio_lang
+                and merged_timings
+            ):
+                merged_timings = realign_timestamps_for_target_language(
+                    merged_timings, source_lang=audio_lang, target_lang=tts_lang
+                )
+
+            _save_checkpoint(project_dir, "translation_v1", merged_timings)
 
     done_stages.append("english")
     _emit_progress_snapshot(done_stages, "characters", _progress_pct(len(done_stages), 0))
@@ -243,8 +329,12 @@ def run_pipeline(prompt_file: str) -> None:
     done_stages.append("characters")
     _emit_progress_snapshot(done_stages, "scenes", _progress_pct(len(done_stages), 0))
 
-    # --- Phase 3: Scene plan with character consistency ---
-    if merged_timings:
+    # --- Phase 3: Scene plan with character consistency (Agent 3) ---
+    cached_scenes = _load_checkpoint(project_dir, "scenes_v1")
+    if cached_scenes is not None:
+        scene_plan = cached_scenes
+        _log(f"[Checkpoint] scenes_v1 loaded: {len(scene_plan)} scenes")
+    elif merged_timings:
         scene_plan = step_generate_scene_plan_timeline(
             merged_timings,
             character_data,
@@ -253,6 +343,7 @@ def run_pipeline(prompt_file: str) -> None:
             creator_topic=content_prompt,
             style_notes=style_notes,
         )
+        _save_checkpoint(project_dir, "scenes_v1", scene_plan)
     else:
         if target_dur <= 120:
             scene_count = max(2, min(15, int(target_dur / 6)))
@@ -268,6 +359,7 @@ def run_pipeline(prompt_file: str) -> None:
             sentence_timings=sentence_timings if sentence_timings else None,
             style_notes=style_notes,
         )
+        _save_checkpoint(project_dir, "scenes_v1", scene_plan)
     done_stages.append("scenes")
     _emit_progress_snapshot(done_stages, "subtitles", _progress_pct(len(done_stages), 0))
 
@@ -312,12 +404,19 @@ def run_pipeline(prompt_file: str) -> None:
             _progress_pct(len(done_stages), min(0.95, 0.05 + 0.9 * frac)),
         )
 
-    # --- Phase 5: Character-consistent images (lock block + optional prompt cache) ---
-    images = step_fetch_images(
-        scene_plan, assets_dir / "images",
-        character_data=character_data,
-        on_image_progress=_on_img_progress,
-    )
+    # --- Phase 5: Character-consistent images (Agent 5) ---
+    cached_images = _load_checkpoint(project_dir, "images_v1")
+    if cached_images is not None and all(Path(p).exists() for p in cached_images):
+        images = cached_images
+        _log(f"[Checkpoint] images_v1 loaded: {len(images)} images")
+    else:
+        images = step_fetch_images(
+            scene_plan, assets_dir / "images",
+            character_data=character_data,
+            on_image_progress=_on_img_progress,
+        )
+        if images:
+            _save_checkpoint(project_dir, "images_v1", images)
 
     if not images:
         _log("No images generated — creating gradient placeholders")

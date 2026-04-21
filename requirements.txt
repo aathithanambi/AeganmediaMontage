@@ -20,3 +20,8 @@ PyJWT>=2.9
 yt-dlp>=2024.0
 Pillow>=10.0
 numpy>=1.24
+
+# Google Speech-to-Text (word-level timestamp transcription)
+# Provides measured ±50ms word offsets vs Gemini's estimated ±1-2s sentence timing.
+# Requires "Cloud Speech-to-Text API" enabled in your Google Cloud project.
+google-cloud-speech>=2.26

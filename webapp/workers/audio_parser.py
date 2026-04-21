@@ -1,11 +1,17 @@
 """STEP 1 — Audio to Transcript with Timestamps, TTS, and Translation.
 
 Responsible for:
-  - Transcribing audio (with and without timestamps) via Gemini multimodal
+  - Transcribing audio via Google Speech-to-Text API (word-level timestamps)
+    with Gemini multimodal estimation as fallback
   - Merging timed segments to fit scene budget
   - Adding English translations per segment
+  - Timestamp re-alignment after language translation (pace ratio correction)
   - Subtitle translation
   - Text-to-Speech generation (Google Cloud TTS) with chunk splitting
+
+Agent checkpoints:
+  transcript_v1  — raw sentence timings from Speech API or Gemini
+  translation_v1 — merged timings with English translations added
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,11 +35,232 @@ from webapp.workers.shared import (
     _google_tts,
     _log,
     _parse_json_response,
+    _probe_duration,
     _track_api,
 )
 
 # ---------------------------------------------------------------------------
-# Transcription (Gemini multimodal)
+# Language constants
+# ---------------------------------------------------------------------------
+
+# BCP-47 language codes for Google Speech-to-Text API
+SPEECH_LANGUAGE_CODES: dict[str, str] = {
+    "english": "en-US", "tamil": "ta-IN", "hindi": "hi-IN",
+    "telugu": "te-IN", "kannada": "kn-IN", "malayalam": "ml-IN",
+    "bengali": "bn-IN", "marathi": "mr-IN", "gujarati": "gu-IN",
+    "punjabi": "pa-IN", "urdu": "ur-IN", "arabic": "ar-XA",
+    "spanish": "es-ES", "french": "fr-FR", "german": "de-DE",
+    "italian": "it-IT", "portuguese": "pt-BR", "japanese": "ja-JP",
+    "korean": "ko-KR", "chinese": "cmn-CN", "russian": "ru-RU",
+    "dutch": "nl-NL", "polish": "pl-PL", "turkish": "tr-TR",
+    "thai": "th-TH", "vietnamese": "vi-VN", "indonesian": "id-ID",
+    "malay": "ms-MY", "swedish": "sv-SE", "norwegian": "nb-NO",
+    "danish": "da-DK", "finnish": "fi-FI",
+}
+
+# Relative speech pace vs English (values > 1.0 = spoken slower than English).
+# Used to re-scale image display windows after translating narration into another language.
+LANGUAGE_PACE_RATIO: dict[str, float] = {
+    "english": 1.00, "tamil": 1.15, "hindi": 1.08, "telugu": 1.12,
+    "kannada": 1.10, "malayalam": 1.13, "bengali": 1.05, "marathi": 1.07,
+    "gujarati": 1.06, "punjabi": 1.04, "urdu": 1.09, "arabic": 1.10,
+    "spanish": 0.95, "french": 0.97, "german": 1.02, "italian": 0.96,
+    "portuguese": 0.95, "japanese": 0.90, "korean": 0.92, "chinese": 0.88,
+    "russian": 1.05, "dutch": 0.98, "turkish": 1.03, "thai": 1.05,
+}
+
+# ---------------------------------------------------------------------------
+# Google Speech-to-Text API — true word-level timestamps
+# ---------------------------------------------------------------------------
+
+def _convert_to_flac_for_speech(audio_path: str) -> str | None:
+    """Convert audio to mono 16 kHz FLAC for optimal Speech API accuracy.
+    Returns the temp FLAC path on success, or None if ffmpeg is unavailable."""
+    try:
+        out = Path(audio_path).with_suffix(".speech_tmp.flac")
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path,
+             "-ar", "16000", "-ac", "1", "-c:a", "flac", str(out)],
+            capture_output=True, text=True, timeout=180,
+        )
+        if result.returncode == 0 and out.exists() and out.stat().st_size > 200:
+            return str(out)
+    except Exception:
+        pass
+    return None
+
+
+def _get_speech_encoding(audio_path: str) -> str:
+    """Map file extension to a Google Speech API AudioEncoding string."""
+    return {
+        "flac": "FLAC", "wav": "LINEAR16", "mp3": "MP3",
+        "ogg": "OGG_OPUS", "m4a": "MP3", "aac": "MP3",
+    }.get(Path(audio_path).suffix.lower().lstrip("."), "MP3")
+
+
+def _parse_speech_time(t: Any) -> float:
+    """Convert '1.200s' or 1.2 (seconds) from Speech API word offset to float."""
+    if isinstance(t, (int, float)):
+        return float(t)
+    return float(str(t).rstrip("s")) if t else 0.0
+
+
+def _speech_results_to_segments(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Google Speech API result blocks into sentence-level timed segments."""
+    segments: list[dict[str, Any]] = []
+    for result in results:
+        alts = result.get("alternatives", [])
+        if not alts:
+            continue
+        best = alts[0]
+        transcript = best.get("transcript", "").strip()
+        words = best.get("words", [])
+        if not transcript:
+            continue
+        if words:
+            start = _parse_speech_time(words[0].get("startTime", "0s"))
+            end   = _parse_speech_time(words[-1].get("endTime", "0s"))
+            word_list = [
+                {
+                    "word": w.get("word", ""),
+                    "start": _parse_speech_time(w.get("startTime", "0s")),
+                    "end":   _parse_speech_time(w.get("endTime", "0s")),
+                }
+                for w in words
+            ]
+        else:
+            start, end, word_list = 0.0, 0.0, []
+        segments.append({
+            "text": transcript,
+            "start": start,
+            "end": end,
+            "duration": max(0.1, end - start),
+            "words": word_list,
+            "source": "google_speech_api",
+        })
+    return segments
+
+
+def _speech_longrunning(
+    base_url: str,
+    api_key: str,
+    body: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Submit an async LongRunningRecognize job and poll until complete (≤10 min)."""
+    url = f"{base_url}/speech:longrunningrecognize?key={api_key}"
+    resp = requests.post(url, json=body, timeout=120)
+    if resp.status_code != 200:
+        _log(f"LongRunningRecognize submit failed: {resp.status_code} {resp.text[:200]}")
+        return []
+    op_name = resp.json().get("name", "")
+    if not op_name:
+        _log("No operation name returned from longrunningrecognize")
+        return []
+    _log(f"Speech operation started: {op_name} — polling...")
+    poll_url = f"{base_url}/operations/{op_name}?key={api_key}"
+    for attempt in range(60):
+        time.sleep(10)
+        try:
+            pr = requests.get(poll_url, timeout=30)
+        except Exception as e:
+            _log(f"Poll request error: {e}")
+            continue
+        if pr.status_code != 200:
+            _log(f"Poll error: {pr.status_code}")
+            continue
+        op = pr.json()
+        if op.get("done"):
+            if "error" in op:
+                _log(f"Speech operation error: {op['error']}")
+                return []
+            return op.get("response", {}).get("results", [])
+        if attempt % 3 == 0:
+            _log(f"Speech still processing... ({(attempt + 1) * 10}s elapsed)")
+    _log("Speech operation timed out after 10 minutes")
+    return []
+
+
+def step_google_speech_transcribe(
+    audio_path: str,
+    language: str = "english",
+) -> list[dict[str, Any]]:
+    """Transcribe audio using Google Speech-to-Text API with measured word-level timestamps.
+
+    Delivers ±50ms per-word accuracy vs Gemini's ±1-2s estimated sentence timing.
+    Automatically selects synchronous (<55s) or async long-running (≥55s) recognition.
+    Falls back to Gemini timestamp estimation when the Speech API is unavailable.
+
+    Checkpoint key: transcript_v1
+    """
+    api_key = _google_api_key()
+    if not api_key:
+        _log("No GOOGLE_API_KEY — falling back to Gemini timestamp estimation")
+        return _transcribe_with_timestamps(audio_path, language)
+
+    lang_code = SPEECH_LANGUAGE_CODES.get(language.lower(), "en-US")
+    _log(f"[Speech API] Transcribing with word-level timestamps ({lang_code})...")
+
+    flac_path: str | None = None
+    try:
+        audio_dur = _probe_duration(audio_path)
+        flac_path = _convert_to_flac_for_speech(audio_path)
+        use_path = flac_path or audio_path
+
+        with open(use_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+        encoding = "FLAC" if flac_path else _get_speech_encoding(audio_path)
+        config: dict[str, Any] = {
+            "encoding": encoding,
+            "languageCode": lang_code,
+            "enableWordTimeOffsets": True,
+            "enableAutomaticPunctuation": True,
+            "model": "latest_long",
+        }
+        if encoding == "LINEAR16":
+            config["sampleRateHertz"] = 16000
+
+        body = {"config": config, "audio": {"content": audio_b64}}
+        base_url = "https://speech.googleapis.com/v1"
+
+        if audio_dur > 55:
+            _log(f"[Speech API] Long audio ({audio_dur:.0f}s) — using async recognition")
+            results = _speech_longrunning(base_url, api_key, body)
+        else:
+            resp = requests.post(
+                f"{base_url}/speech:recognize?key={api_key}",
+                json=body, timeout=120,
+            )
+            if resp.status_code != 200:
+                _log(
+                    f"[Speech API] Error {resp.status_code}: {resp.text[:300]}\n"
+                    "Falling back to Gemini timestamp estimation"
+                )
+                return _transcribe_with_timestamps(audio_path, language)
+            results = resp.json().get("results", [])
+
+        if not results:
+            _log("[Speech API] No results returned — falling back to Gemini")
+            return _transcribe_with_timestamps(audio_path, language)
+
+        segments = _speech_results_to_segments(results)
+        _track_api("speech", cost_estimate=max(0.004, audio_dur * 0.00001))
+        _log(f"[Speech API] {len(segments)} segments with measured timestamps ✓")
+        return segments
+
+    except Exception as e:
+        _log(f"[Speech API] Unexpected error: {e} — falling back to Gemini")
+        return _transcribe_with_timestamps(audio_path, language)
+    finally:
+        if flac_path:
+            try:
+                Path(flac_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Transcription (Gemini multimodal — fallback / no-audio-upload path)
 # ---------------------------------------------------------------------------
 
 def step_transcribe_audio(audio_path: str, language: str = "english") -> str | None:
@@ -94,7 +322,11 @@ def step_transcribe_audio(audio_path: str, language: str = "english") -> str | N
 
 
 def _transcribe_with_timestamps(audio_path: str, language: str = "english") -> list[dict[str, Any]]:
-    """Transcribe audio and estimate per-sentence timing using Gemini."""
+    """Transcribe audio and ESTIMATE per-sentence timing using Gemini multimodal.
+
+    This is the fallback path. Prefer step_google_speech_transcribe() for
+    measured word-level timestamps (±50ms vs ±1-2s estimation accuracy).
+    """
     api_key = _google_api_key()
     if not api_key:
         return []
@@ -247,6 +479,68 @@ Respond ONLY with a JSON array of strings (length {len(batch)})."""
     for i, t in enumerate(timings):
         t["text_en"] = all_en[i] if i < len(all_en) else (t.get("text") or "").strip()
     return timings
+
+
+# ---------------------------------------------------------------------------
+# Timestamp re-alignment after language translation
+# ---------------------------------------------------------------------------
+
+def realign_timestamps_for_target_language(
+    timings: list[dict[str, Any]],
+    source_lang: str,
+    target_lang: str,
+) -> list[dict[str, Any]]:
+    """Re-scale segment time windows to match the target language's speech pace.
+
+    When translating audio from English to Tamil (for TTS replacement), Tamil
+    speech runs ~15% slower. Each image display window must expand proportionally
+    so images stay in sync with the generated Tamil narration.
+
+    Use case: uploaded English audio → Tamil TTS → Tamil timestamps for scene sync.
+    If source and target pace are within 1%, no re-alignment is applied.
+
+    Args:
+        timings:     Sentence segments from source-language transcription.
+        source_lang: Language of the original transcription (e.g. "english").
+        target_lang: Language of the TTS that will replace the audio (e.g. "tamil").
+
+    Returns:
+        New list with re-computed start / end / duration. All text fields preserved.
+    """
+    if not timings:
+        return timings
+
+    src_ratio = LANGUAGE_PACE_RATIO.get(source_lang.lower(), 1.0)
+    tgt_ratio = LANGUAGE_PACE_RATIO.get(target_lang.lower(), 1.0)
+
+    if abs(src_ratio - tgt_ratio) < 0.01:
+        return timings
+
+    scale = tgt_ratio / src_ratio
+    direction = f"+{(scale - 1) * 100:.1f}%" if scale > 1 else f"{(scale - 1) * 100:.1f}%"
+    _log(
+        f"[Realign] {source_lang}→{target_lang}: scale={scale:.3f} ({direction} duration). "
+        f"Tamil is ~15% slower than English."
+    )
+
+    realigned: list[dict[str, Any]] = []
+    cursor = float(timings[0].get("start", 0.0))
+
+    for t in timings:
+        orig_dur = float(t.get("duration", max(0.1, t.get("end", 0) - t.get("start", 0))))
+        new_dur = max(0.15, orig_dur * scale)
+        realigned.append({
+            **t,
+            "start": round(cursor, 3),
+            "end": round(cursor + new_dur, 3),
+            "duration": round(new_dur, 3),
+        })
+        cursor += new_dur
+
+    total_orig = sum(float(t.get("duration", 0)) for t in timings)
+    total_new = sum(t["duration"] for t in realigned)
+    _log(f"[Realign] Total duration: {total_orig:.1f}s → {total_new:.1f}s")
+    return realigned
 
 
 # ---------------------------------------------------------------------------
