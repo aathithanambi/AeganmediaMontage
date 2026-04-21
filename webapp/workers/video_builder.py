@@ -11,6 +11,7 @@ All FFmpeg timeouts scale dynamically to support videos up to 20+ minutes.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import zipfile
@@ -44,7 +45,10 @@ def step_compose_slideshow(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     W, H, FPS = 1920, 1080, 30
-    FADE_DUR = 1.0
+    # Crossfade duration in seconds. Shorter = crisper cuts, less blur during transitions.
+    # Was 1.0s — reduced to 0.5s so a 3s scene isn't 33% transition blur.
+    # Override with XFADE_DURATION env var (e.g. 0.3 for very crisp cuts).
+    FADE_DUR = float(os.environ.get("XFADE_DURATION", "0.5"))
 
     floor_dur = max(0.12, float(min_scene_duration))
     durations: list[float] = []

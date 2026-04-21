@@ -34,6 +34,7 @@ from webapp.workers.shared import (
 from webapp.workers.audio_parser import (
     _add_english_to_timings,
     _merge_timings_for_budget,
+    _split_long_segments,
     _transcribe_with_timestamps,
     realign_timestamps_for_target_language,
     step_google_speech_transcribe,
@@ -275,12 +276,24 @@ def run_pipeline(prompt_file: str) -> None:
             # Agent 2 — merge segments to scene budget then add English for image prompts
             merged_timings = _merge_timings_for_budget(sentence_timings, max_scenes=max_scenes_budget)
             _log(f"Timeline segments after budget merge: {len(merged_timings)} (cap {max_scenes_budget})")
+
+            # Split any segment longer than MAX_SEGMENT_DURATION seconds so that
+            # a long opening sentence (e.g. 12s) doesn't hold a single image on
+            # screen while the audio narrates multiple distinct story moments.
+            max_seg_dur = float(os.environ.get("MAX_SEGMENT_DURATION", "6"))
+            before_split = len(merged_timings)
+            merged_timings = _split_long_segments(merged_timings, max_segment_dur=max_seg_dur)
+            if len(merged_timings) != before_split:
+                _log(
+                    f"[Segment split] {before_split} → {len(merged_timings)} segments "
+                    f"(max {max_seg_dur:.0f}s per segment)"
+                )
+
             merged_timings = _add_english_to_timings(merged_timings, audio_lang)
 
             # Re-align timestamps when the narration language differs from the
             # uploaded audio language (e.g. English audio → Tamil TTS replacement).
-            # This corrects image display windows for Tamil's ~15% slower speech pace.
-            tts_lang = audio_lang  # language that TTS will be generated in
+            tts_lang = audio_lang
             if (
                 not (uploaded_audio and Path(uploaded_audio).exists())
                 and tts_lang != audio_lang
@@ -345,10 +358,13 @@ def run_pipeline(prompt_file: str) -> None:
         )
         _save_checkpoint(project_dir, "scenes_v1", scene_plan)
     else:
+        # Target one image per ~3s for short videos so images change in sync
+        # with narration beats. Previously used /6 which gave only 6 scenes
+        # for a 40s video — one image held while audio narrated 3–4 actions.
         if target_dur <= 120:
-            scene_count = max(2, min(15, int(target_dur / 6)))
+            scene_count = max(4, min(40, int(target_dur / 3)))
         elif target_dur <= 600:
-            scene_count = max(10, min(40, int(target_dur / 12)))
+            scene_count = max(10, min(80, int(target_dur / 8)))
         else:
             scene_count = max(30, min(200, int(target_dur / 20)))
         scene_plan = step_generate_scene_plan(

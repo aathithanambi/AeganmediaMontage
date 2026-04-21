@@ -482,6 +482,48 @@ Respond ONLY with a JSON array of strings (length {len(batch)})."""
 
 
 # ---------------------------------------------------------------------------
+# Long-segment splitter
+# ---------------------------------------------------------------------------
+
+def _split_long_segments(
+    timings: list[dict[str, Any]],
+    max_segment_dur: float = 6.0,
+) -> list[dict[str, Any]]:
+    """Split any segment longer than max_segment_dur into equal sub-segments.
+
+    Without this, a long opening sentence (e.g. 12s) produces a single image
+    that stays on screen while the audio narrates multiple story beats.
+    Each sub-segment inherits the parent's text and English translation so
+    that the scene planner can still generate a meaningful image prompt.
+
+    Example: one 12s segment → two 6s sub-segments, each with the same text.
+    The scene planner will generate two slightly different images for visual variety.
+    """
+    if not timings:
+        return timings
+    result: list[dict[str, Any]] = []
+    for t in timings:
+        dur = float(t.get("duration", max(0.1, t.get("end", 0) - t.get("start", 0))))
+        if dur <= max_segment_dur:
+            result.append(t)
+            continue
+        n_splits = max(2, int(dur / max_segment_dur) + (1 if dur % max_segment_dur > 0.5 else 0))
+        sub_dur = dur / n_splits
+        start = float(t.get("start", 0))
+        for k in range(n_splits):
+            sub_start = round(start + k * sub_dur, 3)
+            sub_end = round(start + (k + 1) * sub_dur, 3)
+            result.append({
+                **t,
+                "start": sub_start,
+                "end": sub_end,
+                "duration": round(sub_dur, 3),
+            })
+        _log(f"[Segment split] {dur:.1f}s segment → {n_splits} × {sub_dur:.1f}s sub-scenes")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Timestamp re-alignment after language translation
 # ---------------------------------------------------------------------------
 
