@@ -338,7 +338,7 @@ Art style to use (from reference video when provided, else default): {art_style}
 Image type: {image_type}
 {topic_block}
 Transcript:
-{transcript[:3000]}
+{transcript[:8000]}
 
 Return a JSON object with:
 - "characters": Array of character objects, each with:
@@ -562,15 +562,15 @@ For each scene, provide a JSON array with exactly {scene_count} objects. Each ob
 - "image_prompt": A DETAILED prompt for AI image generation. CRITICAL RULES:
   * EVERY prompt MUST start with: "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette (golden yellows, soft oranges, muted greens, warm browns), soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition."
   * Then describe the SPECIFIC scene content after the style prefix
-  * Describe the EXACT same character appearance every time a character appears
-  * For characters: include ALL physical features (age, hair color, clothing, build, expression)
-  * For animals: describe exact species, colors, markings consistently
-  * For locations: include specific environmental details (trees, water, sky, buildings)
-  * Style reference: like Indian Tamil YouTube story channels — warm, emotional, expressive 2D illustrated art
+  * CHARACTER CONSISTENCY: For EVERY character that appears, copy their EXACT description from the character list above — same skin color, same hair, same outfit, same body type. Never invent new colors or clothes.
+  * OUTFIT CHANGES: Only change a character's outfit when the narration explicitly says so (e.g. "wore", "put on", "changed into"). State the new outfit explicitly and carry it forward.
+  * For locations: include specific environmental details (trees, water, sky, buildings) that match previously described locations.
+  * Style: like Indian Tamil YouTube story channels — warm, emotional, expressive 2D illustrated art
 - "search_query": 2-4 word search query for the scene content
 - "mood": one word describing the scene mood
 - "duration": estimated seconds this scene should be shown (match audio timing if available)
 - "transition": "dissolve" for emotional scenes, "fade" for scene changes, "zoom" for dramatic moments
+- "characters_present": array of character names who appear visually in this scene
 
 Respond ONLY with the JSON array."""
 
@@ -632,21 +632,35 @@ def _generate_scene_plan_batched(
         sent_end = int(total_sentences * end_scene / total_scenes)
         script_chunk = " ".join(sentences[sent_start:sent_end])
 
+        # Build a summary of the previous batch's last 3 scenes for cross-batch continuity
+        prev_summary = ""
+        if all_scenes:
+            tail = all_scenes[-3:]
+            prev_lines = [
+                f"  Scene {start_scene - len(tail) + j + 1}: {s.get('narration', '')[:120]}"
+                for j, s in enumerate(tail)
+            ]
+            prev_summary = (
+                "\nPrevious batch (last scenes — maintain visual continuity):\n"
+                + "\n".join(prev_lines) + "\n"
+            )
+
         llm_prompt = f"""You are a video scene planner. Create scenes {start_scene+1} to {end_scene} of a {total_scenes}-scene video.
 
 Title: {title}
 Topic: {prompt[:200]}
-{ref_context}{style_context}{char_context}
+{ref_context}{style_context}{char_context}{prev_summary}
 Script portion (scenes {start_scene+1}-{end_scene}):
 {script_chunk[:3000]}
 
 Create a JSON array with exactly {count_this_batch} scene objects. Each must have:
 - "narration": portion of script for this scene
-- "image_prompt": EVERY prompt MUST start with "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette, soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition." Then describe the specific scene.
+- "image_prompt": EVERY prompt MUST start with "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette, soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition." Then describe the specific scene. CHARACTER CONSISTENCY: copy the exact skin color, outfit, and colors from the character list above for every character who appears. Only change outfit if the narration says so.
 - "search_query": 2-4 word search query
 - "mood": one word mood
 - "duration": seconds (float)
 - "transition": "dissolve" for emotional, "fade" for scene changes, "zoom" for dramatic
+- "characters_present": array of character names visible in this scene
 
 Respond ONLY with the JSON array."""
 
@@ -751,11 +765,15 @@ Timed scenes (each line has duration_sec — copy it EXACTLY into the "duration"
 
 Rules:
 - "narration": use the ORIG text for that scene (subtitle / spoken line).
-- "image_prompt": MUST begin with the same 2D oil-painting illustrated style wording, then describe ONLY what the EN line says is happening — literal visuals, not metaphors unrelated to the sentence.
-  For any character who appears, restate their signature_outfit and main_colors from the JSON above (do not invent new clothes or colors).
+- "image_prompt": MUST begin with the same 2D oil-painting illustrated style wording, then describe ONLY what the EN line says is happening.
+  CHARACTER CONSISTENCY — for every character who appears:
+    * Copy their EXACT skin_color, signature_outfit, and main_colors from the JSON above.
+    * NEVER invent new clothing colors, change hairstyle, or alter skin tone between scenes.
+    * Only change outfit if the narration EXPLICITLY says the character changed clothes (e.g. "wore", "put on", "changed into") — state the new outfit explicitly.
 - "duration": must equal duration_sec from that line (float).
 - "transition": "dissolve" or "fade".
 - "search_query": 2-4 English keywords.
+- "characters_present": array of character names who appear visually in this scene.
 
 Respond ONLY with the JSON array."""
 
@@ -779,6 +797,9 @@ Respond ONLY with the JSON array."""
                         s["image_prompt"] = ip
                         s.setdefault("transition", "dissolve")
                         s.setdefault("search_query", "story")
+                        # Preserve characters_present so image_renderer can group scenes
+                        if not s.get("characters_present"):
+                            s["characters_present"] = []
                         fixed.append(s)
                     return fixed
             except (json.JSONDecodeError, ValueError, TypeError, KeyError) as e:

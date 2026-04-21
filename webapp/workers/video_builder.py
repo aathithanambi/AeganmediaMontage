@@ -60,17 +60,31 @@ def step_compose_slideshow(
     if audio_path and Path(audio_path).exists():
         audio_total = _probe_duration(audio_path)
         if audio_total > 0:
+            # Each xfade transition removes FADE_DUR seconds from the final output.
+            # To compensate, inflate the raw per-segment durations so that:
+            #   sum(durations) - (n_images - 1) * FADE_DUR == audio_total
+            # This ensures the composed video track matches the uploaded audio length.
+            n_fades = max(0, len(images) - 1)
+            xfade_overhead = n_fades * FADE_DUR
+            target_raw_dur = audio_total + xfade_overhead
+
             if not durations or abs(sum(durations) - audio_total) > audio_total * 0.3:
-                per_image = max(floor_dur, audio_total / len(images))
+                per_image = max(floor_dur, target_raw_dur / len(images))
                 durations = [per_image] * len(images)
             else:
-                ratio = audio_total / sum(durations) if sum(durations) > 0 else 1.0
+                ratio = target_raw_dur / sum(durations) if sum(durations) > 0 else 1.0
                 durations = [d * ratio for d in durations]
 
-            gap = audio_total - sum(durations)
+            # Correct any floating-point rounding drift against the inflated target
+            gap = target_raw_dur - sum(durations)
             if abs(gap) > 0.01 and durations:
                 durations[-1] = max(floor_dur, durations[-1] + gap)
-            _log(f"Audio-synced durations: sum={sum(durations):.3f}s audio={audio_total:.3f}s  ({len(durations)} segs)")
+            _log(
+                f"Audio-synced durations: raw_sum={sum(durations):.3f}s "
+                f"xfade_overhead={xfade_overhead:.1f}s "
+                f"expected_output={sum(durations) - xfade_overhead:.3f}s "
+                f"audio={audio_total:.3f}s ({len(durations)} segs)"
+            )
 
     while len(durations) < len(images):
         durations.append(6.0)
@@ -210,13 +224,17 @@ def step_compose_slideshow(
             video_track = segments[0]
 
         if audio_path and Path(audio_path).exists():
+            # Use explicit -t to pin output to the true audio duration.
+            # Avoids -shortest silently truncating the video when the composed
+            # video track is shorter than the audio due to xfade overlap loss.
+            mux_t_args = ["-t", f"{audio_total:.3f}"] if audio_total > 0 else []
             cmd = [
                 "ffmpeg", "-y",
                 "-i", str(video_track),
                 "-i", audio_path,
                 "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
                 "-map", "0:v", "-map", "1:a",
-                "-shortest",
+                *mux_t_args,
                 "-movflags", "+faststart",
                 str(output_path),
             ]
@@ -262,10 +280,18 @@ def _verify_output(
         audio_dur = _probe_duration(audio_path)
         result["audio_duration"] = audio_dur
         diff = abs(video_dur - audio_dur)
-        if diff > 2.0:
-            result["checks"].append(f"WARN: Video/audio duration mismatch (video={video_dur:.1f}s, audio={audio_dur:.1f}s, diff={diff:.1f}s)")
+        pct = (diff / audio_dur * 100) if audio_dur > 0 else 0
+        if diff > 1.5:
+            result["passed"] = False
+            result["checks"].append(
+                f"FAIL: Video/audio duration mismatch — "
+                f"video={video_dur:.1f}s audio={audio_dur:.1f}s diff={diff:.1f}s ({pct:.0f}%). "
+                f"Expected video≈audio after xfade compensation."
+            )
         else:
-            result["checks"].append(f"OK: Audio/video sync (video={video_dur:.1f}s, audio={audio_dur:.1f}s, diff={diff:.1f}s)")
+            result["checks"].append(
+                f"OK: Audio/video sync (video={video_dur:.1f}s, audio={audio_dur:.1f}s, diff={diff:.1f}s)"
+            )
 
     file_size = Path(video_path).stat().st_size / (1024 * 1024)
     result["file_size_mb"] = round(file_size, 1)
