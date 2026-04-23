@@ -132,15 +132,31 @@ def _ts_to_srt(seconds: float) -> str:
 
 
 def _build_srt(entries: list[dict]) -> str:
-    """Build SRT content from a list of {start, end, text} dicts."""
-    lines = []
-    for i, e in enumerate(entries, 1):
+    """Build SRT content from a list of {start, end, text} dicts.
+
+    Consecutive entries with identical text are merged into a single subtitle
+    block spanning the combined time range.  This prevents the same sentence
+    from appearing twice in a row when _split_long_segments splits one audio
+    segment into two same-text sub-scenes for visual variety.
+    """
+    # --- deduplication pass ---
+    merged: list[dict] = []
+    for e in entries:
         text = (e.get("text") or "").strip()
         if not text:
             continue
+        if merged and merged[-1]["text"] == text:
+            # Same sentence — extend the previous block's end time rather than
+            # creating a duplicate subtitle line.
+            merged[-1]["end"] = e["end"]
+        else:
+            merged.append({"start": e["start"], "end": e["end"], "text": text})
+
+    lines = []
+    for i, e in enumerate(merged, 1):
         lines.append(str(i))
         lines.append(f"{_ts_to_srt(e['start'])} --> {_ts_to_srt(e['end'])}")
-        lines.append(text)
+        lines.append(e["text"])
         lines.append("")
     return "\n".join(lines)
 

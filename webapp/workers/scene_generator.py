@@ -365,6 +365,14 @@ Return a JSON object with:
   - "role": their role in the story
   - "signature_outfit": ONE concise sentence with EXACT garment types and MAIN colors (e.g. "sky-blue linen kurta, dark brown trousers, brown leather chappals")
   - "main_colors": array of 3-8 color names fixed for this character's clothes/accents
+- "story_props": Array of recurring physical objects central to the story (fruits, tools, bags,
+    garments, animals, vehicles, etc.) that must look IDENTICAL every time they appear.
+    Each prop object:
+    - "name": short label (e.g. "orange", "weighing scale", "paper bag")
+    - "description": precise visual description with explicit negations to stop the AI substituting
+      a similar object. E.g. "round citrus orange, vivid bright-orange skin, 7-8 cm diameter,
+      NOT green, NOT yellow, NOT lemon, NOT lime"
+    Include 3-8 key props.
 - "locations": Array of location objects, each with:
   - "name": location name
   - "description": detailed visual description (type, size, setting — village/city, colors, atmosphere, time of day, key props)
@@ -377,7 +385,8 @@ Return a JSON object with:
   - "camera_suggestion": suggested framing (e.g. "wide shot", "medium close-up", "extreme close-up of face")
 
 Be EXTREMELY specific with face_lock and hair_color — these exact words will be copied into every AI image prompt to prevent the face and hair from changing between scenes.
-The face_lock, skin_color, hair_color, age_range, signature_outfit and main_colors are CRITICAL for consistency.
+The face_lock, skin_color, hair_color, age_range, signature_outfit, main_colors, and story_props are ALL CRITICAL for consistency.
+For story_props especially: if the story involves a specific fruit (e.g. oranges), name the exact colour and shape and add negations (NOT green, NOT lemon) so the AI never substitutes a different fruit.
 
 Respond ONLY with the JSON object."""
 
@@ -390,7 +399,11 @@ Respond ONLY with the JSON object."""
                 chars = parsed.get("characters", [])
                 locs = parsed.get("locations", [])
                 scenes = parsed.get("scenes", [])
-                _log(f"Extracted: {len(chars)} characters, {len(locs)} locations, {len(scenes)} scenes")
+                props = parsed.get("story_props", [])
+                _log(
+                    f"Extracted: {len(chars)} characters, {len(locs)} locations, "
+                    f"{len(scenes)} scenes, {len(props)} story props"
+                )
                 return _normalize_character_entries(parsed)
         except (json.JSONDecodeError, ValueError) as e:
             _log(f"Character extraction parse failed: {e}")

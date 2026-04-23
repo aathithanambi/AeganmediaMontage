@@ -92,8 +92,11 @@ def _build_character_lock_block(
         "• The HAIR COLOR AND STYLE must not change — same color, same cut, same length.",
         "• The SKIN COLOR must not change — not lighter, not darker, not different hue.",
         "• The AGE must not change — same wrinkles, same youthfulness.",
-        "• The OUTFIT stays the same unless the story explicitly says they changed clothes.",
+        "• The FULL OUTFIT (top garment + bottom garment + footwear) stays the same unless the story "
+        "explicitly says they changed clothes — including pants/trouser colour and shoe/sandal/bare-feet.",
         "• NEVER invent new facial features, recolor skin, change hair color/style, or swap build.",
+        "• ONLY ONE instance of each named character per frame — NEVER show the same character twice, "
+        "as a reflection, clone, twin, or duplicate. If only one character is named, only one appears.",
         "",
         "LOCKED CAST:",
     ]
@@ -129,8 +132,27 @@ def _build_character_lock_block(
         if color_line:
             lines.append(f"  MAIN COLORS (fixed): {color_line}")
         if outfit:
-            lines.append(f"  SIGNATURE OUTFIT: {outfit}")
+            lines.append(
+                f"  SIGNATURE OUTFIT (top + bottom + footwear — ALL locked, do NOT change): {outfit}"
+            )
     lines.append("")
+    # Story props — specific objects (food, tools, clothing items) that must look
+    # the same in every scene they appear in.  Prevents the AI from substituting
+    # a different fruit, colour, or object type across scenes.
+    props = character_data.get("story_props") or []
+    if props:
+        lines.append(
+            "STORY PROPS (use EXACTLY this description every time this object appears — "
+            "NEVER substitute a different colour, shape, or type):"
+        )
+        for p in props[:12]:
+            if not isinstance(p, dict):
+                continue
+            pn = (p.get("name") or "").strip()
+            pd = (p.get("description") or "").strip().replace("\n", " ")
+            if pn or pd:
+                lines.append(f"• {pn}: {pd[:200]}" if pn else f"• {pd[:200]}")
+        lines.append("")
     locs = character_data.get("locations") or []
     if locs:
         lines.append("RECURRING PLACES (keep look consistent when reused):")
