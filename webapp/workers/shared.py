@@ -510,21 +510,80 @@ def _google_tts(text: str, output_path: Path, language: str = "english") -> str 
     return None
 
 
+def _elevenlabs_api_key() -> str:
+    return os.environ.get("ELEVENLABS_API_KEY", "").strip()
+
+
+def _elevenlabs_available() -> bool:
+    return bool(_elevenlabs_api_key())
+
+
+def _elevenlabs_tts(
+    text: str,
+    output_path: "Path",
+    *,
+    voice_id: str,
+    language: str = "english",
+) -> "str | None":
+    """Generate TTS audio via ElevenLabs using a given voice_id.
+
+    Uses eleven_multilingual_v2 which supports 29 languages including
+    Tamil, Hindi, Telugu, Malayalam, Kannada, etc.
+    Falls back to None if the ElevenLabs API key is missing or package absent.
+    """
+    api_key = _elevenlabs_api_key()
+    if not api_key:
+        _log("ElevenLabs API key not set — skipping ElevenLabs TTS")
+        return None
+
+    try:
+        from elevenlabs.client import ElevenLabs  # type: ignore
+        from elevenlabs import save, VoiceSettings  # type: ignore
+    except ImportError:
+        _log("elevenlabs package not installed — run: pip install elevenlabs>=1.9")
+        return None
+
+    _log(f"Generating {language} narration via ElevenLabs (voice_id={voice_id[:12]}...)...")
+    try:
+        client = ElevenLabs(api_key=api_key)
+        audio = client.text_to_speech.convert(
+            text=text,
+            voice_id=voice_id,
+            model_id="eleven_multilingual_v2",
+            voice_settings=VoiceSettings(
+                stability=0.75,
+                similarity_boost=0.90,
+                style=0.0,
+                speed=1.0,
+            ),
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        save(audio, str(output_path))
+        if output_path.exists() and output_path.stat().st_size > 500:
+            char_count = len(text)
+            _track_api("tts", cost_estimate=char_count * 0.000030, chars=char_count)
+            _log(f"ElevenLabs narration generated ({language}): {output_path}")
+            return str(output_path)
+        _log("ElevenLabs TTS output too small — may have failed")
+    except Exception as e:
+        _log(f"ElevenLabs TTS error: {e}")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Style / prompt constants
 # ---------------------------------------------------------------------------
 
 DEFAULT_STYLE: dict[str, str] = {
     "art_style": (
-        "cinematic photorealistic 3D render, dramatic volumetric lighting, "
-        "highly detailed realistic characters with expressive faces and natural skin textures, "
-        "richly detailed Indian/South Asian heritage setting, "
-        "emotionally resonant cinematic scene"
+        "2D digital illustration with soft oil-painting textures, "
+        "clean character outlines with expressive faces, warm rich color palette, "
+        "detailed Indian/South Asian cultural setting, storybook quality"
     ),
-    "image_type": "cinematic photorealistic 3D illustration",
-    "editing_style": "slow Ken Burns zoom/pan with dramatic push-ins, soft dissolve transitions, emotional pacing",
-    "color_palette": "warm cinematic tones — deep golds, rich ambers, dramatic shadows, volumetric light rays",
-    "mood": "dramatic cinematic emotional",
+    "image_type": "2D illustrated storybook",
+    "editing_style": "slow Ken Burns zoom/pan, soft dissolve transitions, emotional pacing",
+    "color_palette": "warm earth tones — golden yellows, deep oranges, rich reds, warm browns, soft greens",
+    "mood": "warm emotional storytelling",
 }
 
 # ---------------------------------------------------------------------------
@@ -535,19 +594,20 @@ def _get_image_style_prefix() -> str:
     """Return the IMAGE_STYLE_PREFIX for the current IMAGE_STYLE_PROFILE.
 
     Set IMAGE_STYLE_PROFILE environment variable to select a preset:
-      cinematic   — photorealistic 3D renders, dramatic lighting (default, matches Tamil story channels)
-      illustrated — 2D oil-painting storybook illustration (previous default)
+      illustrated — 2D oil-painting storybook illustration (DEFAULT)
+      cinematic   — photorealistic 3D renders, dramatic lighting
       anime       — anime/manga cel-shaded style
       minimal     — clean minimal flat design
     """
-    profile = (os.environ.get("IMAGE_STYLE_PROFILE") or "cinematic").strip().lower()
-    if profile in ("illustrated", "2d", "storybook", "oil"):
+    profile = (os.environ.get("IMAGE_STYLE_PROFILE") or "illustrated").strip().lower()
+    if profile in ("cinematic", "3d", "realistic", "photorealistic"):
         return (
-            "2D digital illustration with soft oil-painting textures, "
-            "clean character outlines, expressive faces, warm earth-tone palette "
-            "(golden yellows, soft oranges, muted greens, warm browns), "
-            "soft gradient background, golden hour warm lighting, "
-            "storybook quality, 16:9 wide cinematic composition. "
+            "Cinematic photorealistic 3D illustration, ultra-detailed, "
+            "dramatic volumetric lighting with warm golden rays and deep atmospheric shadows, "
+            "highly detailed realistic characters with expressive faces and natural skin textures, "
+            "richly detailed Indian/South Asian cultural setting and period-accurate costumes, "
+            "16:9 wide cinematic composition with shallow depth of field, "
+            "emotionally resonant scene, Unreal Engine quality render. "
         )
     if profile in ("anime", "manga"):
         return (
@@ -560,14 +620,14 @@ def _get_image_style_prefix() -> str:
             "Clean minimalist flat design illustration, bold simple shapes, "
             "limited color palette, modern graphic style, 16:9 composition. "
         )
-    # Default: cinematic photorealistic (matches Thagaval Thalam / Tamil story YouTube channels)
+    # Default: 2D illustrated storybook (warm, hand-painted quality)
     return (
-        "Cinematic photorealistic 3D illustration, ultra-detailed, "
-        "dramatic volumetric lighting with warm golden rays and deep atmospheric shadows, "
-        "highly detailed realistic characters with expressive faces and natural skin textures, "
-        "richly detailed Indian/South Asian cultural setting and period-accurate costumes, "
-        "16:9 wide cinematic composition with shallow depth of field, "
-        "emotionally resonant scene, Unreal Engine quality render. "
+        "2D digital illustration with soft oil-painting textures, "
+        "clean confident character outlines, expressive detailed faces, "
+        "warm rich color palette (golden yellows, deep oranges, rich reds, warm browns, soft greens), "
+        "beautifully detailed Indian/South Asian cultural settings and period-accurate costumes, "
+        "soft ambient lighting with golden hour warmth, "
+        "storybook quality, 16:9 wide composition. "
     )
 
 
@@ -660,7 +720,7 @@ def _meta_ai_style_extra() -> str:
     because the style is already embedded in IMAGE_STYLE_PREFIX.
     Extra modifiers only apply for social/feed optimized variants.
     """
-    prof = (os.environ.get("IMAGE_STYLE_PROFILE") or "cinematic").strip().lower()
+    prof = (os.environ.get("IMAGE_STYLE_PROFILE") or "illustrated").strip().lower()
     if prof in ("meta", "meta-ai", "meta_ai", "social", "feed"):
         return (
             "Social short-form polish: bold readable composition, vivid balanced colors, "

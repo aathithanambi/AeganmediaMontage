@@ -195,7 +195,7 @@ def _analyze_reference_style(
     if style_notes.strip():
         notes_block = (
             "\nUser style instructions from their prompt (honor these when consistent with the reference):\n"
-            f"{style_notes.strip()[:500]}\n"
+            f"{style_notes.strip()[:100000]}\n"
         )
 
     llm_prompt = f"""Analyze this reference video and identify its visual style.
@@ -304,6 +304,18 @@ def _normalize_character_entries(character_data: dict[str, Any]) -> dict[str, An
             ch["main_colors"] = [str(c).strip() for c in mc if str(c).strip()]
         else:
             ch["main_colors"] = []
+        # Normalize face_lock — fall back to description if missing
+        if not ch.get("face_lock"):
+            ch["face_lock"] = (ch.get("description") or "").strip()[:300]
+        # Normalize hair_color — fall back to extracting from description if missing
+        if not ch.get("hair_color"):
+            desc_lower = (ch.get("description") or "").lower()
+            import re as _re
+            hair_match = _re.search(r"([\w\s\-]+hair[\w\s\-]*)", desc_lower)
+            ch["hair_color"] = hair_match.group(1).strip()[:120] if hair_match else ""
+        # Normalize age_range
+        if not ch.get("age_range"):
+            ch["age_range"] = ""
     return character_data
 
 
@@ -328,7 +340,7 @@ def _extract_characters_and_scenes(
     if creator_topic.strip():
         topic_block = (
             f"\nCreator topic / intent (from the user's prompt — keep characters and story aligned with this):\n"
-            f"{creator_topic.strip()[:1200]}\n"
+            f"{creator_topic.strip()[:100000]}\n"
         )
 
     llm_prompt = f"""Analyze this story/narration transcript and extract characters and scenes.
@@ -344,25 +356,28 @@ Return a JSON object with:
 - "characters": Array of character objects, each with:
   - "name": character name
   - "description": detailed visual description (age, gender, face shape, hair style and color, skin tone/complexion, build, distinguishing marks)
-  - "skin_color": exact skin complexion name (e.g. "warm brown", "fair olive", "dark ebony") — MUST stay identical in every frame
-  - "role": their role in the story (protagonist, friend, narrator, etc.)
-  - "signature_outfit": ONE concise sentence naming the default costume with EXACT garment types and their MAIN colors
- (e.g. "crimson cotton kurta, white dhoti, brown leather sandals"). This outfit repeats in every scene unless the story says they changed.
-  - "main_colors": array of 3-8 color names that MUST stay consistent for this character's clothes and accents
-    (e.g. ["deep crimson", "off-white", "warm brown"])
+  - "face_lock": ONE sentence describing IMMUTABLE facial features to repeat verbatim in every image prompt.
+    Must include: face shape (e.g. "oval face"), eye shape and color (e.g. "dark brown almond-shaped eyes"), nose (e.g. "broad flat nose"), jaw (e.g. "strong squared jaw"), eyebrows (e.g. "thick arched eyebrows"), lips (e.g. "full lips").
+    Example: "Oval face, dark brown almond-shaped eyes, broad nose, strong square jaw, thick arched black eyebrows, medium-full lips, short black hair swept back."
+  - "skin_color": exact skin complexion (e.g. "warm medium brown", "fair olive", "deep ebony") — NEVER changes
+  - "hair_color": exact hair color and style (e.g. "jet-black wavy hair shoulder-length", "salt-and-pepper short hair", "dark brown thick hair worn in a bun") — NEVER changes unless story says so
+  - "age_range": approximate age as string (e.g. "mid-20s", "late 50s") — NEVER changes
+  - "role": their role in the story
+  - "signature_outfit": ONE concise sentence with EXACT garment types and MAIN colors (e.g. "sky-blue linen kurta, dark brown trousers, brown leather chappals")
+  - "main_colors": array of 3-8 color names fixed for this character's clothes/accents
 - "locations": Array of location objects, each with:
   - "name": location name
-  - "description": detailed visual description (type, size, setting — village/city, colors, atmosphere)
+  - "description": detailed visual description (type, size, setting — village/city, colors, atmosphere, time of day, key props)
 - "scenes": Array of scene objects (one per story beat), each with:
   - "sentence": the narration text for this scene
   - "characters_present": list of character names in this scene
   - "location": where this scene takes place
-  - "action": what is happening (e.g. "playing near the house", "walking through the forest")
+  - "action": what is happening
   - "mood": emotional tone of the scene
-  - "camera_suggestion": suggested framing (e.g. "wide shot", "medium close-up", "aerial view")
+  - "camera_suggestion": suggested framing (e.g. "wide shot", "medium close-up", "extreme close-up of face")
 
-Be very specific with descriptions — they will be used to generate consistent AI images.
-The signature_outfit and main_colors are CRITICAL: image models must not drift dress or palette between scenes.
+Be EXTREMELY specific with face_lock and hair_color — these exact words will be copied into every AI image prompt to prevent the face and hair from changing between scenes.
+The face_lock, skin_color, hair_color, age_range, signature_outfit and main_colors are CRITICAL for consistency.
 
 Respond ONLY with the JSON object."""
 
@@ -502,7 +517,7 @@ Visual style (from reference video analysis when a URL was provided; otherwise d
         if style_notes.strip():
             style_context += (
                 f"\nUser style instructions from their prompt (honor alongside the above):\n"
-                f"{style_notes.strip()[:500]}\n"
+                f"{style_notes.strip()[:100000]}\n"
             )
 
         char_context = ""
@@ -514,19 +529,27 @@ Visual style (from reference video analysis when a URL was provided; otherwise d
                 nm = ch.get("name", "Unknown")
                 outfit = (ch.get("signature_outfit") or "").strip()
                 skin = (ch.get("skin_color") or "").strip()
+                hair = (ch.get("hair_color") or "").strip()
+                age = (ch.get("age_range") or "").strip()
+                face_lock = (ch.get("face_lock") or ch.get("description") or "").strip()[:300]
                 cols = ch.get("main_colors") or []
                 col_txt = ", ".join(str(c) for c in cols[:8]) if cols else ""
-                desc = ch.get("description", "No description")
                 extra = ""
+                if age:
+                    extra += f" [LOCK age: {age}]"
                 if skin:
                     extra += f" [LOCK skin: {skin}]"
+                if hair:
+                    extra += f" [LOCK hair: {hair}]"
                 if col_txt:
                     extra += f" [LOCK colors: {col_txt}]"
                 if outfit:
                     extra += f" [LOCK outfit: {outfit}]"
-                char_descs.append(f"  - {nm}: {desc}{extra}")
+                if face_lock:
+                    extra += f" [LOCK face: {face_lock}]"
+                char_descs.append(f"  - {nm}:{extra}")
             char_context = (
-                "\nCharacters (same face + skin color + outfit + main colors in every scene):\n"
+                "\nCharacters — copy these EXACT features into every image_prompt for that character:\n"
                 + "\n".join(char_descs) + "\n"
             )
 
@@ -758,12 +781,12 @@ def step_generate_scene_plan_timeline(
         if creator_topic.strip():
             topic_ctx = (
                 f"\nCreator topic / intent (user prompt — use for overall subject, tone, and setting; "
-                f"each scene's action must still match its EN line):\n{creator_topic.strip()[:1200]}\n"
+                f"each scene's action must still match its EN line):\n{creator_topic.strip()[:100000]}\n"
             )
         notes_ctx = ""
         if style_notes.strip():
             notes_ctx = (
-                f"\nUser style notes from prompt:\n{style_notes.strip()[:600]}\n"
+                f"\nUser style notes from prompt:\n{style_notes.strip()[:100000]}\n"
             )
         style_prefix_for_timeline = IMAGE_STYLE_PREFIX.rstrip(". ") + "."
         prompt = f"""You create still-image scenes for a narrated video. Return a JSON array of EXACTLY {len(batch)} objects, same order as the lines below.

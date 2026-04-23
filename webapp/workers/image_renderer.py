@@ -87,11 +87,13 @@ def _build_character_lock_block(
     if not chars:
         return ""
     lines: list[str] = [
-        "SERIES CHARACTER LOCK — obey in EVERY frame:",
-        "• Keep the SAME face, hair, skin color, age, and body type for each named character.",
-        "• Keep the SAME signature outfit and SAME main garment colors unless the narration "
-        "explicitly says they changed clothes.",
-        "• Do NOT recolor skin, outfits, swap palette, or invent new costumes between scenes.",
+        "SERIES CHARACTER LOCK — copy EXACTLY in EVERY frame, NO exceptions:",
+        "• The FACE (shape, eyes, nose, jaw) must be IDENTICAL to the first time this character appeared.",
+        "• The HAIR COLOR AND STYLE must not change — same color, same cut, same length.",
+        "• The SKIN COLOR must not change — not lighter, not darker, not different hue.",
+        "• The AGE must not change — same wrinkles, same youthfulness.",
+        "• The OUTFIT stays the same unless the story explicitly says they changed clothes.",
+        "• NEVER invent new facial features, recolor skin, change hair color/style, or swap build.",
         "",
         "LOCKED CAST:",
     ]
@@ -100,9 +102,11 @@ def _build_character_lock_block(
             continue
         name = (ch.get("name") or "Character").strip()
         role = (ch.get("role") or "").strip()
-        desc = (ch.get("description") or "").strip().replace("\n", " ")
+        face_lock = (ch.get("face_lock") or ch.get("description") or "").strip().replace("\n", " ")
         outfit = (ch.get("signature_outfit") or "").strip()
         skin = (ch.get("skin_color") or "").strip()
+        hair = (ch.get("hair_color") or "").strip()
+        age = (ch.get("age_range") or "").strip()
         colors = ch.get("main_colors") or []
         color_line = ", ".join(str(c) for c in colors[:12]) if colors else ""
 
@@ -114,14 +118,18 @@ def _build_character_lock_block(
         if role:
             bit += f" ({role})"
         lines.append(bit + ":")
+        if age:
+            lines.append(f"  AGE (fixed): {age}")
         if skin:
             lines.append(f"  SKIN COLOR (never change): {skin}")
+        if hair:
+            lines.append(f"  HAIR COLOR & STYLE (never change): {hair}")
+        if face_lock:
+            lines.append(f"  FACE LOCK (copy exactly): {face_lock[:500]}")
         if color_line:
             lines.append(f"  MAIN COLORS (fixed): {color_line}")
         if outfit:
             lines.append(f"  SIGNATURE OUTFIT: {outfit}")
-        if desc:
-            lines.append(f"  LOOK: {desc[:600]}")
     lines.append("")
     locs = character_data.get("locations") or []
     if locs:

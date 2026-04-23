@@ -37,8 +37,10 @@ from webapp.workers.audio_parser import (
     _split_long_segments,
     _transcribe_with_timestamps,
     realign_timestamps_for_target_language,
+    step_clone_voice_from_reference,
     step_google_speech_transcribe,
     step_tts,
+    step_tts_elevenlabs,
     step_transcribe_audio,
     step_translate_subtitles,
 )
@@ -116,6 +118,81 @@ def _load_checkpoint(project_dir: Path, name: str) -> Any | None:
 
 
 # ---------------------------------------------------------------------------
+# SRT subtitle generation
+# ---------------------------------------------------------------------------
+
+def _ts_to_srt(seconds: float) -> str:
+    """Convert seconds to SRT timestamp format HH:MM:SS,mmm."""
+    seconds = max(0.0, seconds)
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int(round((seconds - int(seconds)) * 1000))
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _build_srt(entries: list[dict]) -> str:
+    """Build SRT content from a list of {start, end, text} dicts."""
+    lines = []
+    for i, e in enumerate(entries, 1):
+        text = (e.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(str(i))
+        lines.append(f"{_ts_to_srt(e['start'])} --> {_ts_to_srt(e['end'])}")
+        lines.append(text)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _generate_srt_files(
+    merged_timings: list[dict],
+    scene_plan: list[dict],
+    audio_lang: str,
+    renders_dir: "Path",
+) -> None:
+    """Write subtitles_en.srt and subtitles_<lang>.srt and print OUTPUT_SUBTITLES_* lines."""
+    # Build subtitle entries from merged_timings when available (precise word-level
+    # timestamps from Google Speech), else fall back to scene_plan durations.
+    en_entries: list[dict] = []
+    lang_entries: list[dict] = []
+
+    if merged_timings:
+        for seg in merged_timings:
+            start = float(seg.get("start", 0))
+            end = float(seg.get("end", start + 3.0))
+            text_en = (seg.get("text_en") or seg.get("text", "")).strip()
+            text_lang = seg.get("text", "").strip()
+            if text_en:
+                en_entries.append({"start": start, "end": end, "text": text_en})
+            if text_lang:
+                lang_entries.append({"start": start, "end": end, "text": text_lang})
+    elif scene_plan:
+        cursor = 0.0
+        for s in scene_plan:
+            dur = float(s.get("duration", 3.0))
+            end = cursor + dur
+            narration = (s.get("narration") or "").strip()
+            if narration:
+                en_entries.append({"start": cursor, "end": end, "text": narration})
+                lang_entries.append({"start": cursor, "end": end, "text": narration})
+            cursor = end
+
+    if en_entries:
+        srt_en = renders_dir / "subtitles_en.srt"
+        srt_en.write_text(_build_srt(en_entries), encoding="utf-8")
+        _log(f"SRT English: {srt_en} ({len(en_entries)} entries)")
+        print(f"OUTPUT_SUBTITLES_EN={srt_en}")
+
+    if lang_entries and audio_lang and audio_lang not in ("english", "en"):
+        lang_code = audio_lang[:2]
+        srt_lang = renders_dir / f"subtitles_{lang_code}.srt"
+        srt_lang.write_text(_build_srt(lang_entries), encoding="utf-8")
+        _log(f"SRT {audio_lang}: {srt_lang} ({len(lang_entries)} entries)")
+        print(f"OUTPUT_SUBTITLES_LANG={srt_lang}::{audio_lang}")
+
+
+# ---------------------------------------------------------------------------
 # Main pipeline orchestration
 # ---------------------------------------------------------------------------
 
@@ -150,7 +227,19 @@ def run_pipeline(prompt_file: str) -> None:
     form_audio_lang = (payload.get("audioLanguage") or "").strip().lower()
     form_subtitle_lang = (payload.get("subtitleLanguage") or "").strip().lower()
     enable_subtitles = payload.get("enableSubtitles", False)
+    enable_watermark = payload.get("enableWatermark", False)
+    clone_voice = payload.get("cloneVoice", False)
     enable_music = payload.get("enableMusic", False)
+
+    # Apply watermark toggle: if user enabled it in the dashboard, forward the
+    # WATERMARK_TEXT env var to video_builder (if not already set, use the title).
+    if enable_watermark:
+        if not os.environ.get("WATERMARK_TEXT"):
+            os.environ["WATERMARK_TEXT"] = title
+        _log(f"Watermark: enabled — text='{os.environ['WATERMARK_TEXT']}'")
+    else:
+        os.environ.pop("WATERMARK_TEXT", None)
+        _log("Watermark: disabled")
 
     _log(f"Pipeline: {pipeline_name}")
     _log(f"Project:  {project_id}")
@@ -171,8 +260,9 @@ def run_pipeline(prompt_file: str) -> None:
     done_stages.append("setup")
     _emit_progress_snapshot(done_stages, "reference", _progress_pct(len(done_stages), 0))
 
-    # --- Phase 0: Reference video analysis ---
+    # --- Phase 0: Reference video analysis + optional voice cloning ---
     ref_summary = None
+    cloned_voice_id: str | None = None
     ref_path = step_download_reference(ref_url, project_dir) if ref_url else None
     if ref_path:
         _log(f"Reference available at: {ref_path}")
@@ -180,6 +270,27 @@ def run_pipeline(prompt_file: str) -> None:
         if analysis:
             ref_summary = _summarize_reference(analysis)
             _log(f"Reference summary:\n{ref_summary[:300]}...")
+
+        # Voice cloning: extract narrator's voice from the reference video and
+        # clone it via ElevenLabs so the generated narration uses the same voice.
+        if clone_voice:
+            # Check for cached voice_id from a previous run
+            cached_vid_file = assets_dir / "cloned_voice_id.txt" if (assets_dir := project_dir / "assets") else None
+            assets_dir = project_dir / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            cached_vid_file = assets_dir / "cloned_voice_id.txt"
+            if cached_vid_file.exists():
+                cloned_voice_id = cached_vid_file.read_text(encoding="utf-8").strip()
+                _log(f"Loaded cached cloned voice_id: {cloned_voice_id}")
+            else:
+                _log("Cloning narrator voice from reference video via ElevenLabs...")
+                cloned_voice_id = step_clone_voice_from_reference(
+                    str(ref_path), assets_dir, clone_name=title[:40]
+                )
+            if cloned_voice_id:
+                _log(f"Voice clone ready: {cloned_voice_id}")
+            else:
+                _log("Voice clone failed or ElevenLabs not configured — will use Google TTS")
 
     done_stages.append("reference")
     _emit_progress_snapshot(done_stages, "transcribe", _progress_pct(len(done_stages), 0))
@@ -385,9 +496,16 @@ def run_pipeline(prompt_file: str) -> None:
 
     narration_sections = [s.get("narration", "") for s in scene_plan]
 
+    # Auto-enable subtitles when audio is uploaded + transcript is available and
+    # AUTO_SUBTITLES_FOR_AUDIO=1 is set (or user explicitly enabled them).
+    auto_sub = _env_truthy("AUTO_SUBTITLES_FOR_AUDIO", False)
+    if not enable_subtitles and auto_sub and has_custom_audio and audio_transcript:
+        _log("AUTO_SUBTITLES_FOR_AUDIO: enabling subtitles from transcript")
+        enable_subtitles = True
+
     # Subtitles
     if not enable_subtitles:
-        _log("Subtitles disabled by user")
+        _log("Subtitles disabled")
         subtitle_sections = [""] * len(narration_sections)
     elif has_custom_audio and not audio_transcript:
         _log("Skipping subtitles — no transcript available for uploaded audio")
@@ -402,10 +520,22 @@ def run_pipeline(prompt_file: str) -> None:
     done_stages.append("subtitles")
     _emit_progress_snapshot(done_stages, "tts", _progress_pct(len(done_stages), 0))
 
-    # --- Phase 4: TTS (skipped if custom audio) ---
+    # --- Phase 4: TTS (skipped if custom audio uploaded) ---
     if uploaded_audio and Path(uploaded_audio).exists():
         _log(f"Using uploaded audio: {uploaded_audio}")
         audio_path: str | None = uploaded_audio
+    elif cloned_voice_id:
+        # Use ElevenLabs with the cloned reference voice — generates narration
+        # in the chosen language using the same voice style as the reference video.
+        _log(f"Generating {audio_lang} narration via ElevenLabs cloned voice...")
+        audio_path = step_tts_elevenlabs(
+            script, assets_dir / "narration.mp3",
+            language=audio_lang,
+            voice_id=cloned_voice_id,
+        )
+        if not audio_path:
+            _log("ElevenLabs TTS failed — falling back to Google TTS")
+            audio_path = step_tts(script, assets_dir / "narration_gtts.mp3", language=audio_lang)
     else:
         audio_path = step_tts(script, assets_dir / "narration.mp3", language=audio_lang)
 
@@ -514,6 +644,12 @@ def run_pipeline(prompt_file: str) -> None:
         usage = get_api_usage()
         _log(f"Pipeline completed in {elapsed:.0f}s ({elapsed/60:.1f} min)")
         _log(f"API_USAGE={json.dumps(usage)}")
+
+        # --- Generate SRT subtitle files ---
+        _generate_srt_files(
+            merged_timings, scene_plan, audio_lang, renders_dir
+        )
+
         _log("Pipeline completed successfully")
         print(f"OUTPUT_VIDEO={video_path}")
         sys.exit(0)

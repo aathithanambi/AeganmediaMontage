@@ -69,10 +69,10 @@ def step_compose_slideshow(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     W, H, FPS = 1920, 1080, 30
-    # Crossfade duration in seconds. Shorter = crisper cuts, less blur during transitions.
-    # Was 1.0s — reduced to 0.5s so a 3s scene isn't 33% transition blur.
-    # Override with XFADE_DURATION env var (e.g. 0.3 for very crisp cuts).
-    FADE_DUR = float(os.environ.get("XFADE_DURATION", "0.5"))
+    # Crossfade duration in seconds. Shorter = crisper cuts, less double-exposure blur.
+    # Default 0.3s: fast enough to feel like a clean cut but with a subtle dissolve.
+    # Set XFADE_DURATION=0.5 for softer dissolves, XFADE_DURATION=0.15 for near-instant cuts.
+    FADE_DUR = float(os.environ.get("XFADE_DURATION", "0.3"))
 
     floor_dur = max(0.12, float(min_scene_duration))
     durations: list[float] = []
@@ -165,14 +165,19 @@ def step_compose_slideshow(
             ]
 
             if enable_subtitles and sections and i < len(sections) and sections[i].strip():
-                sub_text = _escape_drawtext(sections[i].strip()[:120])
-                sub_end = max(0.15, seg_dur - min(0.5, seg_dur * 0.2))
+                # Split long subtitle lines at ~45 chars per line for readability
+                raw_sub = sections[i].strip()[:160]
+                sub_text = _escape_drawtext(raw_sub)
+                sub_end = max(0.15, seg_dur - min(0.4, seg_dur * 0.15))
+                # Style matches Tamil story YouTube channels: bold white text,
+                # dark semi-transparent shadow box, centered near bottom
                 vf_parts.append(
                     f"drawtext=text='{sub_text}'"
-                    f":fontsize=32:fontcolor=white"
-                    f":borderw=2:bordercolor=black@0.8"
-                    f":x=(w-tw)/2:y=h-70"
-                    f":enable='between(t,0.05,{sub_end})'"
+                    f":fontsize=38:fontcolor=white@0.95"
+                    f":borderw=3:bordercolor=black@0.85"
+                    f":box=1:boxcolor=black@0.35:boxborderw=8"
+                    f":x=(w-tw)/2:y=h*0.88"
+                    f":enable='between(t,0.08,{sub_end:.2f})'"
                 )
 
             # Channel watermark overlay (top-right corner)

@@ -145,10 +145,13 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
 
     images_zip = _resolve_images_zip_path(run, stdout)
     scenes_data = _resolve_scenes_data(stdout)
+    subtitles_en = _resolve_subtitles_en_path(run, stdout)
+    subtitles_lang_path, subtitles_lang_code = _resolve_subtitles_lang_path(run, stdout)
     log.info(
-        "Run %s COMPLETED | video=%s | images_zip=%s | scenes=%d | elapsed=%.0fs",
+        "Run %s COMPLETED | video=%s | images_zip=%s | scenes=%d | srt_en=%s | srt_lang=%s | elapsed=%.0fs",
         run["_id"], video_path or "(none)", images_zip or "(none)",
-        len((scenes_data or {}).get("scenes", [])), elapsed_seconds,
+        len((scenes_data or {}).get("scenes", [])),
+        subtitles_en or "(none)", subtitles_lang_path or "(none)", elapsed_seconds,
     )
 
     api_usage = _extract_api_usage(stdout)
@@ -170,6 +173,11 @@ def _mark_completed(run: dict, stdout: str, stderr: str, elapsed_seconds: float 
         completed_update["imagesZipPath"] = images_zip
     if scenes_data:
         completed_update["scenesData"] = scenes_data
+    if subtitles_en:
+        completed_update["subtitlesEnPath"] = subtitles_en
+    if subtitles_lang_path:
+        completed_update["subtitlesLangPath"] = subtitles_lang_path
+        completed_update["subtitlesLang"] = subtitles_lang_code
     if snap is not None:
         completed_update["progressSnapshot"] = snap
 
@@ -216,6 +224,43 @@ def _resolve_scenes_data(stdout: str) -> dict | None:
     return None
 
 
+def _resolve_subtitles_en_path(run: dict, stdout: str) -> str | None:
+    """Parse OUTPUT_SUBTITLES_EN= from pipeline stdout."""
+    for line in stdout.splitlines():
+        if line.startswith("OUTPUT_SUBTITLES_EN="):
+            raw = line.split("=", 1)[1].strip()
+            if raw and Path(raw).exists():
+                return raw
+    fallback = Path("projects") / run["projectId"] / "renders" / "subtitles_en.srt"
+    return str(fallback) if fallback.exists() else None
+
+
+def _resolve_subtitles_lang_path(run: dict, stdout: str) -> tuple[str | None, str]:
+    """Parse OUTPUT_SUBTITLES_LANG= from pipeline stdout.
+
+    Returns (path, language_code) or (None, '').
+    """
+    lang = ""
+    path = None
+    for line in stdout.splitlines():
+        if line.startswith("OUTPUT_SUBTITLES_LANG="):
+            parts = line.split("=", 1)[1].strip()
+            # format: "path::lang_code" e.g. "projects/.../subtitles_ta.srt::ta"
+            if "::" in parts:
+                path, lang = parts.rsplit("::", 1)
+            else:
+                path = parts
+            if path and Path(path).exists():
+                return path, lang
+    # fallback: look for any subtitles_*.srt that isn't _en.srt
+    renders = Path("projects") / run["projectId"] / "renders"
+    if renders.exists():
+        for f in renders.glob("subtitles_*.srt"):
+            if f.name != "subtitles_en.srt":
+                return str(f), f.stem.replace("subtitles_", "")
+    return None, ""
+
+
 def _resolve_images_zip_path(run: dict, stdout: str) -> str | None:
     for line in stdout.splitlines():
         if line.startswith("OUTPUT_IMAGES_ZIP="):
@@ -250,6 +295,8 @@ def _execute_run(run: dict) -> None:
                 "audioLanguage": run.get("audioLanguage"),
                 "subtitleLanguage": run.get("subtitleLanguage"),
                 "enableSubtitles": run.get("enableSubtitles", False),
+                "enableWatermark": run.get("enableWatermark", False),
+                "cloneVoice": run.get("cloneVoice", False),
                 "enableMusic": run.get("enableMusic", False),
                 "requestedBy": run.get("requestedBy"),
             },

@@ -64,6 +64,20 @@
       <label for="reference_url">Reference Video URL <span class="muted">(optional &mdash; YouTube, TikTok, Reel, or any video URL)</span></label>
       <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." />
     </div>
+    <div class="form-row" id="clone-voice-row" style="display:none">
+      <div class="form-group">
+        <label for="clone_voice">Clone Narrator Voice from Reference URL?</label>
+        <select name="clone_voice" id="clone_voice">
+          <option value="no" selected>No — use default Google TTS voice</option>
+          <option value="yes">Yes — clone the voice from the reference video</option>
+        </select>
+        <p class="muted" style="font-size:0.82rem;margin-top:4px">
+          When <b>Yes</b>: the narrator's voice is extracted from the reference video URL and cloned via ElevenLabs.
+          The generated narration will use that same voice, delivered in the chosen narration language.
+          Requires <code>ELEVENLABS_API_KEY</code> in server config.
+        </p>
+      </div>
+    </div>
     <div class="form-row">
       <div class="form-group">
         <label for="audio_language">Audio / Narration Language</label>
@@ -77,7 +91,7 @@
           <option value="malayalam">Malayalam (മലയാളം)</option>
           <option value="bengali">Bengali (বাংলা)</option>
           <option value="marathi">Marathi (मराठी)</option>
-          <option value="gujarati">Gujarati (ગુજરાતી)</option>
+          <option value="gujarati">Gujarati (ગુજรাతી)</option>
           <option value="punjabi">Punjabi (ਪੰਜਾਬੀ)</option>
           <option value="urdu">Urdu (اردو)</option>
           <option value="spanish">Spanish (Español)</option>
@@ -90,37 +104,38 @@
         </select>
       </div>
       <div class="form-group">
-        <label for="enable_subtitles">Enable Subtitles</label>
+        <label for="enable_subtitles">Write Subtitles on Video?</label>
         <select name="enable_subtitles" id="enable_subtitles">
-          <option value="no" selected>No</option>
-          <option value="yes">Yes</option>
+          <option value="no" selected>No — subtitles will not appear on video</option>
+          <option value="yes">Yes — burn subtitles into video</option>
         </select>
+        <p class="muted" style="font-size:0.82rem;margin-top:4px">
+          Both English and Narration Language subtitle files (.srt) are always generated and available to download after the video is ready, regardless of this setting.
+        </p>
       </div>
     </div>
     <div class="form-row" id="subtitle-options" style="display:none">
       <div class="form-group">
-        <label for="subtitle_language">Subtitle Language</label>
+        <label for="subtitle_language">Which language to burn into video?</label>
         <select name="subtitle_language" id="subtitle_language">
-          <option value="">Same as audio</option>
           <option value="english">English</option>
-          <option value="tamil">Tamil (தமிழ்)</option>
-          <option value="hindi">Hindi (हिन्दी)</option>
-          <option value="telugu">Telugu (తెలుగు)</option>
-          <option value="kannada">Kannada (ಕನ್ನಡ)</option>
-          <option value="malayalam">Malayalam (മലയാളം)</option>
-          <option value="bengali">Bengali (বাংলা)</option>
-          <option value="marathi">Marathi (मराठी)</option>
-          <option value="gujarati">Gujarati (ગુજરાતી)</option>
-          <option value="punjabi">Punjabi (ਪੰਜਾਬੀ)</option>
-          <option value="urdu">Urdu (اردو)</option>
-          <option value="spanish">Spanish (Español)</option>
-          <option value="french">French (Français)</option>
-          <option value="german">German (Deutsch)</option>
-          <option value="japanese">Japanese (日本語)</option>
-          <option value="korean">Korean (한국어)</option>
-          <option value="arabic">Arabic (العربية)</option>
-          <option value="portuguese">Portuguese (Português)</option>
+          <option value="">Narration Language (same as audio)</option>
         </select>
+        <p class="muted" style="font-size:0.82rem;margin-top:4px">
+          Choose which of the two generated subtitle tracks to overlay on the video frames.
+        </p>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="enable_watermark">Watermark <span class="muted">(channel name top-right)</span></label>
+        <select name="enable_watermark" id="enable_watermark">
+          <option value="no" selected>No</option>
+          <option value="yes">Yes</option>
+        </select>
+        <p class="muted" style="font-size:0.82rem;margin-top:4px">
+          Overlay your channel name on every frame. Set <code>WATERMARK_TEXT</code> in server config to your channel name.
+        </p>
       </div>
       <div class="form-group">
         <label for="enable_music">Background Music</label>
@@ -302,6 +317,16 @@
     }
     subToggle.addEventListener("change", toggleSubOpts);
     toggleSubOpts();
+  }
+
+  var refInput = document.getElementById("reference_url");
+  var cloneRow = document.getElementById("clone-voice-row");
+  if(refInput && cloneRow){
+    function toggleCloneRow(){
+      cloneRow.style.display = refInput.value.trim() ? "" : "none";
+    }
+    refInput.addEventListener("input", toggleCloneRow);
+    toggleCloneRow();
   }
 })();
 

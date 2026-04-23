@@ -8,6 +8,7 @@ Responsible for:
   - Timestamp re-alignment after language translation (pace ratio correction)
   - Subtitle translation
   - Text-to-Speech generation (Google Cloud TTS) with chunk splitting
+  - Voice cloning from reference video (ElevenLabs IVC) + multilingual TTS
 
 Agent checkpoints:
   transcript_v1  — raw sentence timings from Speech API or Gemini
@@ -29,6 +30,8 @@ import requests
 from webapp.workers.shared import (
     SUPPORTED_LANGUAGES,
     TTS_CHAR_LIMIT,
+    _elevenlabs_available,
+    _elevenlabs_tts,
     _gemini_generate,
     _google_api_key,
     _google_available,
@@ -686,5 +689,146 @@ def step_tts(text: str, output_path: Path, language: str = "english") -> str | N
         return str(output_path)
     except subprocess.CalledProcessError as e:
         _log(f"TTS concat failed: {e.stderr[:200] if e.stderr else ''}")
+        shutil.copy2(chunk_paths[0], str(output_path))
+        return str(output_path)
+
+
+# ---------------------------------------------------------------------------
+# Voice cloning from reference video
+# ---------------------------------------------------------------------------
+
+def step_clone_voice_from_reference(
+    ref_video_path: str,
+    assets_dir: Path,
+    clone_name: str = "ref_voice",
+) -> "str | None":
+    """Extract narration audio from the reference video and create an ElevenLabs
+    Instant Voice Clone.
+
+    Process:
+      1. ffmpeg: strip music/sfx by extracting the full audio track.
+         (A clean 30-90s sample is enough for a good IVC.)
+      2. ElevenLabs IVC API: create a temporary cloned voice.
+      3. Return the ElevenLabs voice_id string for reuse in TTS generation.
+
+    Returns voice_id string on success, None on any failure.
+    The caller should handle None gracefully (fall back to Google TTS).
+    """
+    if not _elevenlabs_available():
+        _log("ElevenLabs key not set — cannot clone voice from reference")
+        return None
+
+    try:
+        from elevenlabs.client import ElevenLabs  # type: ignore
+    except ImportError:
+        _log("elevenlabs package not installed — run: pip install elevenlabs>=1.9")
+        return None
+
+    # Step 1: Extract audio from reference video (first 120s — enough for IVC)
+    ref_audio = assets_dir / "ref_voice_sample.mp3"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", ref_video_path,
+                "-t", "120",              # take up to 120 seconds
+                "-vn",                    # no video
+                "-acodec", "libmp3lame",
+                "-q:a", "2",
+                "-ar", "22050",
+                str(ref_audio),
+            ],
+            capture_output=True, text=True, timeout=120, check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        _log(f"Voice sample extraction failed: {e.stderr[:200] if e.stderr else e}")
+        return None
+
+    if not ref_audio.exists() or ref_audio.stat().st_size < 10_000:
+        _log("Reference audio sample too small — skipping voice clone")
+        return None
+
+    _log(f"Reference voice sample extracted: {ref_audio} ({ref_audio.stat().st_size // 1024} KB)")
+
+    # Step 2: Create ElevenLabs Instant Voice Clone
+    try:
+        from webapp.workers.shared import _elevenlabs_api_key  # local import avoids circular
+        client = ElevenLabs(api_key=_elevenlabs_api_key())
+        with open(ref_audio, "rb") as f:
+            voice = client.voices.ivc.create(
+                name=clone_name,
+                files=[f],
+                remove_background_noise=True,
+            )
+        voice_id = voice.voice_id
+        _log(f"Voice cloned successfully: voice_id={voice_id}")
+        # Persist voice_id so we can skip re-cloning on checkpoint resume
+        (assets_dir / "cloned_voice_id.txt").write_text(voice_id, encoding="utf-8")
+        return voice_id
+    except Exception as e:
+        _log(f"ElevenLabs voice clone failed: {e}")
+        return None
+
+
+def step_tts_elevenlabs(
+    text: str,
+    output_path: Path,
+    language: str,
+    voice_id: str,
+) -> "str | None":
+    """Generate TTS narration using ElevenLabs with a cloned voice.
+
+    Handles long texts by splitting into ≤2500-char chunks, generating each,
+    and concatenating them with ffmpeg (same pattern as step_tts).
+    Falls back to None so orchestrator can fall back to Google TTS.
+    """
+    MAX_CHUNK = 2500  # ElevenLabs recommended max per request
+    if len(text) <= MAX_CHUNK:
+        return _elevenlabs_tts(text, output_path, voice_id=voice_id, language=language)
+
+    # Split into chunks on sentence boundaries
+    sentences = re.split(r'(?<=[.!?।])\s+', text)
+    chunks: list[str] = []
+    current = ""
+    for sent in sentences:
+        if len(current) + len(sent) + 1 > MAX_CHUNK and current:
+            chunks.append(current.strip())
+            current = sent
+        else:
+            current = f"{current} {sent}" if current else sent
+    if current.strip():
+        chunks.append(current.strip())
+
+    _log(f"ElevenLabs TTS: {len(text)} chars split into {len(chunks)} chunks")
+    chunk_paths: list[str] = []
+    for i, chunk in enumerate(chunks):
+        chunk_path = output_path.parent / f"el_chunk_{i:03d}.mp3"
+        result = _elevenlabs_tts(chunk, chunk_path, voice_id=voice_id, language=language)
+        if result:
+            chunk_paths.append(result)
+        else:
+            _log(f"ElevenLabs TTS chunk {i + 1} failed")
+
+    if not chunk_paths:
+        return None
+    if len(chunk_paths) == 1:
+        shutil.copy2(chunk_paths[0], str(output_path))
+        return str(output_path)
+
+    concat_file = output_path.parent / "el_concat.txt"
+    with open(concat_file, "w") as f:
+        for cp in chunk_paths:
+            safe = Path(cp).resolve().as_posix()
+            f.write(f"file '{safe}'\n")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", str(concat_file), "-c", "copy", str(output_path)],
+            capture_output=True, text=True, timeout=180, check=True,
+        )
+        _log(f"ElevenLabs TTS chunks concatenated: {output_path}")
+        return str(output_path)
+    except subprocess.CalledProcessError as e:
+        _log(f"ElevenLabs TTS concat failed: {e.stderr[:200] if e.stderr else ''}")
         shutil.copy2(chunk_paths[0], str(output_path))
         return str(output_path)

@@ -25,3 +25,9 @@ numpy>=1.24
 # Provides measured ±50ms word offsets vs Gemini's estimated ±1-2s sentence timing.
 # Requires "Cloud Speech-to-Text API" enabled in your Google Cloud project.
 google-cloud-speech>=2.26
+
+# ElevenLabs — voice cloning + multilingual TTS
+# Used to clone the narrator voice from a reference video URL and regenerate
+# the narration in any chosen language using that cloned voice.
+# Requires ELEVENLABS_API_KEY in .env
+elevenlabs>=1.9

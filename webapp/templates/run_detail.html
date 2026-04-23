@@ -71,6 +71,16 @@
     {% if images_zip_available %}
     <a href="/download/run/{{ run._id }}/images" class="btn btn-secondary">Download Images (ZIP)</a>
     {% endif %}
+    {% if subtitles_en_available %}
+    <a href="/download/run/{{ run._id }}/subtitles/en" class="btn btn-secondary">English Subtitles (.srt)</a>
+    {% else %}
+    <span class="btn btn-secondary" style="opacity:0.45;cursor:not-allowed" title="English subtitle file not yet generated">English Subtitles (.srt)</span>
+    {% endif %}
+    {% if subtitles_lang_available %}
+    <a href="/download/run/{{ run._id }}/subtitles/lang" class="btn btn-secondary">{{ subtitles_lang_name }} Subtitles (.srt)</a>
+    {% elif subtitles_lang_name %}
+    <span class="btn btn-secondary" style="opacity:0.45;cursor:not-allowed" title="{{ subtitles_lang_name }} subtitle file not yet generated">{{ subtitles_lang_name }} Subtitles (.srt)</span>
+    {% endif %}
     <span class="muted">Auto-cleanup in 48 hours</span>
   </div>
 </section>

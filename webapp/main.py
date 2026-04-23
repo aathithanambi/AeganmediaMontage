@@ -319,6 +319,8 @@ async def create_project_from_form(
     audio_language: str = Form(""),
     subtitle_language: str = Form(""),
     enable_subtitles: str = Form("no"),
+    enable_watermark: str = Form("no"),
+    clone_voice: str = Form("no"),
     enable_music: str = Form("no"),
     audio_file: UploadFile | None = File(None),
 ):
@@ -395,6 +397,8 @@ async def create_project_from_form(
         "audioLanguage": audio_language.strip() or None,
         "subtitleLanguage": subtitle_language.strip() or None,
         "enableSubtitles": enable_subtitles.strip().lower() == "yes",
+        "enableWatermark": enable_watermark.strip().lower() == "yes",
+        "cloneVoice": clone_voice.strip().lower() == "yes",
         "enableMusic": enable_music.strip().lower() == "yes",
         "uploadedAudioPath": uploaded_audio_path,
         "status": "queued",
@@ -526,6 +530,55 @@ def download_run_images(request: Request, run_id: str):
     )
 
 
+@app.get("/download/run/{run_id}/subtitles/en")
+def download_run_subtitles_en(request: Request, run_id: str):
+    """Download the English subtitle SRT file for a pipeline run."""
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one({"_id": ObjectId(run_id)})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    srt_path_str = run.get("subtitlesEnPath")
+    if not srt_path_str:
+        raise HTTPException(status_code=404, detail="English subtitles not available for this run")
+
+    safe_path = _safe_video_path(srt_path_str)
+    if not safe_path or not safe_path.exists():
+        raise HTTPException(status_code=404, detail="Subtitle file not found on disk")
+
+    filename = f"{run.get('projectId', 'video')}_{run.get('title', 'output')}_en.srt"
+    filename = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+    return FileResponse(path=str(safe_path), media_type="text/plain", filename=filename)
+
+
+@app.get("/download/run/{run_id}/subtitles/lang")
+def download_run_subtitles_lang(request: Request, run_id: str):
+    """Download the narration-language subtitle SRT file for a pipeline run."""
+    user = _require_user(request)
+    db = get_db()
+    run = db.pipeline_runs.find_one({"_id": ObjectId(run_id)})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not _is_privileged(user) and run.get("requestedBy") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    srt_path_str = run.get("subtitlesLangPath")
+    if not srt_path_str:
+        raise HTTPException(status_code=404, detail="Narration language subtitles not available for this run")
+
+    safe_path = _safe_video_path(srt_path_str)
+    if not safe_path or not safe_path.exists():
+        raise HTTPException(status_code=404, detail="Subtitle file not found on disk")
+
+    lang = run.get("subtitlesLang") or run.get("audioLanguage") or "lang"
+    filename = f"{run.get('projectId', 'video')}_{run.get('title', 'output')}_{lang}.srt"
+    filename = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+    return FileResponse(path=str(safe_path), media_type="text/plain", filename=filename)
+
+
 # ---------------------------------------------------------------------------
 # Run detail page + progress API + video preview
 # ---------------------------------------------------------------------------
@@ -636,6 +689,25 @@ def run_detail(request: Request, run_id: str):
         safe_zip = _safe_video_path(run["imagesZipPath"])
         images_zip_available = safe_zip is not None and safe_zip.exists()
 
+    # Subtitle download availability
+    subtitles_en_available = False
+    if run.get("subtitlesEnPath"):
+        sp = _safe_video_path(run["subtitlesEnPath"])
+        subtitles_en_available = sp is not None and sp.exists()
+
+    subtitles_lang_available = False
+    audio_lang = (run.get("audioLanguage") or "english").strip().lower()
+    # Resolve the display name for the narration language button.
+    # Always derive it from audioLanguage so the grayed placeholder shows even
+    # before the SRT file has been generated.
+    if audio_lang and audio_lang not in ("english", "en", ""):
+        subtitles_lang_name = (run.get("subtitlesLang") or audio_lang).capitalize()
+        if run.get("subtitlesLangPath"):
+            sp2 = _safe_video_path(run["subtitlesLangPath"])
+            subtitles_lang_available = sp2 is not None and sp2.exists()
+    else:
+        subtitles_lang_name = ""   # English projects: no separate narration-language button
+
     return templates.TemplateResponse(
         request, "run_detail.html",
         _template_context(
@@ -643,6 +715,9 @@ def run_detail(request: Request, run_id: str):
             run=run,
             video_available=video_available,
             images_zip_available=images_zip_available,
+            subtitles_en_available=subtitles_en_available,
+            subtitles_lang_available=subtitles_lang_available,
+            subtitles_lang_name=subtitles_lang_name,
             pipeline_stages=PIPELINE_STAGE_ORDER,
         ),
     )
