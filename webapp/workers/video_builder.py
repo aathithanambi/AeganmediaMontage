@@ -28,6 +28,30 @@ from webapp.workers.shared import (
 # Video composition (FFmpeg with audio-synced timing)
 # ---------------------------------------------------------------------------
 
+def _build_watermark_filter(
+    watermark_text: str,
+    watermark_image: str | None = None,
+) -> str:
+    """Build an FFmpeg drawtext filter string for a channel watermark.
+
+    Adds a semi-transparent text watermark in the top-right corner,
+    matching the style of Tamil story YouTube channels (e.g. Thagaval Thalam).
+    Set WATERMARK_TEXT env var to enable (e.g. "My Channel").
+    Set WATERMARK_IMAGE env var to path of a .png logo to overlay instead.
+    """
+    if watermark_image and Path(watermark_image).exists():
+        # Image watermark — caller must add the image as an extra -i input
+        return f"overlay=W-w-20:20:format=auto,format=yuv420p"
+    # Text watermark — top-right corner, semi-transparent white with shadow
+    text = _escape_drawtext(watermark_text)
+    return (
+        f"drawtext=text='{text}'"
+        f":fontsize=28:fontcolor=white@0.75"
+        f":borderw=1:bordercolor=black@0.5"
+        f":x=w-tw-16:y=16"
+    )
+
+
 def step_compose_slideshow(
     images: list[str],
     audio_path: str | None,
@@ -98,11 +122,19 @@ def step_compose_slideshow(
     temp_dir.mkdir(parents=True, exist_ok=True)
     segments: list[Path] = []
 
+    # 8 Ken Burns patterns: (zoom_start, zoom_end, anchor)
+    # Cinematic variety: slow dramatic push-ins, pull-outs, and diagonal pans.
+    # Longer zoom ranges (1.0→1.25) give the photorealistic 3D images a
+    # much more dynamic feel than the old shallow 1.0→1.12 range.
     kb_patterns = [
-        (1.0, 1.15, "center"),
-        (1.15, 1.0, "center"),
-        (1.0, 1.12, "left"),
-        (1.12, 1.0, "right"),
+        (1.0,  1.20, "center"),   # slow zoom in  — revealing scene
+        (1.20, 1.0,  "center"),   # pull back      — widening to context
+        (1.0,  1.25, "left"),     # push in from left — following action
+        (1.25, 1.0,  "right"),    # pull out right  — expanding view
+        (1.05, 1.22, "center"),   # gentle push in  — emotional moment
+        (1.22, 1.05, "left"),     # gentle pull left — contemplative
+        (1.0,  1.18, "right"),    # drift right     — panning reveal
+        (1.18, 1.0,  "center"),   # slow zoom out   — closing beat
     ]
 
     try:
@@ -142,6 +174,12 @@ def step_compose_slideshow(
                     f":x=(w-tw)/2:y=h-70"
                     f":enable='between(t,0.05,{sub_end})'"
                 )
+
+            # Channel watermark overlay (top-right corner)
+            wm_text = (os.environ.get("WATERMARK_TEXT") or "").strip()
+            wm_img = (os.environ.get("WATERMARK_IMAGE") or "").strip()
+            if wm_text and not wm_img:
+                vf_parts.append(_build_watermark_filter(wm_text))
 
             vf = ",".join(vf_parts)
 

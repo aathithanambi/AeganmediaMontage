@@ -549,6 +549,7 @@ Visual style (from reference video analysis when a URL was provided; otherwise d
                 ref_context, style_context, char_context, timing_context, ref_style,
             )
 
+        style_prefix_for_prompt = IMAGE_STYLE_PREFIX.rstrip(". ") + "."
         llm_prompt = f"""You are a video scene planner. Break this narration script into {scene_count} visual scenes.
 
 Title: {title}
@@ -560,12 +561,20 @@ Script:
 For each scene, provide a JSON array with exactly {scene_count} objects. Each object must have:
 - "narration": the exact portion of the script for this scene (1-3 sentences)
 - "image_prompt": A DETAILED prompt for AI image generation. CRITICAL RULES:
-  * EVERY prompt MUST start with: "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette (golden yellows, soft oranges, muted greens, warm browns), soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition."
-  * Then describe the SPECIFIC scene content after the style prefix
+  * EVERY prompt MUST start with exactly: "{style_prefix_for_prompt}"
+  * Then describe the SPECIFIC scene content AFTER the style prefix.
+  * CAMERA ANGLE VARIETY — cycle through these shot types to keep visuals dynamic:
+    - Close-up portrait: character's face filling the frame, blurred background, strong emotional expression
+    - Medium shot: character(s) from waist-up, clear body language and interaction visible
+    - Wide establishing shot: full environment visible, character(s) small within the scene
+    - Low angle / dramatic: camera looking up at character for power/emotion
+    - Over-the-shoulder: viewpoint behind one character looking at another
+    Use the most dramatically appropriate angle for each scene's emotional beat.
   * CHARACTER CONSISTENCY: For EVERY character that appears, copy their EXACT description from the character list above — same skin color, same hair, same outfit, same body type. Never invent new colors or clothes.
   * OUTFIT CHANGES: Only change a character's outfit when the narration explicitly says so (e.g. "wore", "put on", "changed into"). State the new outfit explicitly and carry it forward.
-  * For locations: include specific environmental details (trees, water, sky, buildings) that match previously described locations.
-  * Style: like Indian Tamil YouTube story channels — warm, emotional, expressive 2D illustrated art
+  * BACKGROUND VARIETY: Even if the story stays in one location, vary the framing — indoors vs outdoors area, daytime vs golden hour, foreground props differ. Never reuse the exact same composition twice.
+  * LIGHTING: Vary the mood through lighting — dramatic rim light, soft diffused window light, harsh midday sun, warm candle glow.
+- "camera_angle": one of: "close-up", "medium", "wide", "low-angle", "over-shoulder", "aerial"
 - "search_query": 2-4 word search query for the scene content
 - "mood": one word describing the scene mood
 - "duration": estimated seconds this scene should be shown (match audio timing if available)
@@ -645,6 +654,7 @@ def _generate_scene_plan_batched(
                 + "\n".join(prev_lines) + "\n"
             )
 
+        style_prefix_for_batch = IMAGE_STYLE_PREFIX.rstrip(". ") + "."
         llm_prompt = f"""You are a video scene planner. Create scenes {start_scene+1} to {end_scene} of a {total_scenes}-scene video.
 
 Title: {title}
@@ -655,7 +665,11 @@ Script portion (scenes {start_scene+1}-{end_scene}):
 
 Create a JSON array with exactly {count_this_batch} scene objects. Each must have:
 - "narration": portion of script for this scene
-- "image_prompt": EVERY prompt MUST start with "2D digital illustration with soft oil-painting textures, clean character outlines, expressive faces, warm earth-tone palette, soft gradient background, golden hour warm lighting, storybook quality, 16:9 wide cinematic composition." Then describe the specific scene. CHARACTER CONSISTENCY: copy the exact skin color, outfit, and colors from the character list above for every character who appears. Only change outfit if the narration says so.
+- "image_prompt": EVERY prompt MUST start with "{style_prefix_for_batch}" Then describe the specific scene.
+  CAMERA ANGLE VARIETY — rotate through: close-up portrait (face fills frame), medium shot (waist-up), wide shot (full environment), low-angle dramatic, over-the-shoulder. Pick the most emotionally fitting angle.
+  CHARACTER CONSISTENCY: copy the exact skin color, outfit, and colors from the character list above for every character who appears. Only change outfit if the narration says so.
+  BACKGROUND VARIETY: vary framing and composition in every scene — different angles, props, lighting mood.
+- "camera_angle": one of: "close-up", "medium", "wide", "low-angle", "over-shoulder", "aerial"
 - "search_query": 2-4 word search query
 - "mood": one word mood
 - "duration": seconds (float)
@@ -751,11 +765,12 @@ def step_generate_scene_plan_timeline(
             notes_ctx = (
                 f"\nUser style notes from prompt:\n{style_notes.strip()[:600]}\n"
             )
+        style_prefix_for_timeline = IMAGE_STYLE_PREFIX.rstrip(". ") + "."
         prompt = f"""You create still-image scenes for a narrated video. Return a JSON array of EXACTLY {len(batch)} objects, same order as the lines below.
 
 Title: {title}
 Visual style from reference video (match this look): art_style={style_line}; color_palette={palette}; mood={mood}.
-Base rendering: {IMAGE_STYLE_PREFIX}
+Base rendering style (start EVERY image_prompt with this EXACT text): {style_prefix_for_timeline}
 {topic_ctx}{notes_ctx}
 Characters (keep face, signature_outfit, and main_colors IDENTICAL whenever the same person appears):
 {char_snip}
@@ -765,11 +780,19 @@ Timed scenes (each line has duration_sec — copy it EXACTLY into the "duration"
 
 Rules:
 - "narration": use the ORIG text for that scene (subtitle / spoken line).
-- "image_prompt": MUST begin with the same 2D oil-painting illustrated style wording, then describe ONLY what the EN line says is happening.
+- "image_prompt": MUST begin with the Base rendering style text above, then describe ONLY what the EN line says is happening.
+  CAMERA ANGLE — for EACH scene pick the most emotionally fitting angle and state it clearly:
+    • Close-up portrait: character face fills frame, bokeh background, intense expression
+    • Medium shot (waist-up): body language and interaction visible
+    • Wide establishing shot: full environment, characters small, sets the location clearly
+    • Low-angle dramatic: camera below character, looks powerful/emotional
+    • Over-the-shoulder: viewpoint behind one character facing another
   CHARACTER CONSISTENCY — for every character who appears:
     * Copy their EXACT skin_color, signature_outfit, and main_colors from the JSON above.
     * NEVER invent new clothing colors, change hairstyle, or alter skin tone between scenes.
-    * Only change outfit if the narration EXPLICITLY says the character changed clothes (e.g. "wore", "put on", "changed into") — state the new outfit explicitly.
+    * Only change outfit if the narration EXPLICITLY says the character changed clothes (e.g. "wore", "put on", "changed into").
+  BACKGROUND VARIETY: Even at the same location, vary framing — foreground props, lighting angle, time-of-day mood.
+- "camera_angle": one of: "close-up", "medium", "wide", "low-angle", "over-shoulder", "aerial"
 - "duration": must equal duration_sec from that line (float).
 - "transition": "dissolve" or "fade".
 - "search_query": 2-4 English keywords.
@@ -792,7 +815,9 @@ Respond ONLY with the JSON array."""
                         s["duration"] = dur
                         s["narration"] = s.get("narration") or batch[j].get("text", "")
                         ip = s.get("image_prompt") or ""
-                        if "2d" not in ip.lower() and "illustrat" not in ip.lower():
+                        # Re-prefix if the model forgot to start with the style block
+                        style_lower = IMAGE_STYLE_PREFIX[:30].lower()
+                        if ip and style_lower[:15] not in ip.lower()[:60]:
                             ip = f"{IMAGE_STYLE_PREFIX}{batch[j].get('text_en', '')}"
                         s["image_prompt"] = ip
                         s.setdefault("transition", "dissolve")

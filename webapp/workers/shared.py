@@ -516,23 +516,62 @@ def _google_tts(text: str, output_path: Path, language: str = "english") -> str 
 
 DEFAULT_STYLE: dict[str, str] = {
     "art_style": (
-        "2D digital illustration with soft oil-painting textures, "
-        "clean outlines, expressive character faces, warm skin tones, "
-        "soft gradient background washes, storybook quality"
+        "cinematic photorealistic 3D render, dramatic volumetric lighting, "
+        "highly detailed realistic characters with expressive faces and natural skin textures, "
+        "richly detailed Indian/South Asian heritage setting, "
+        "emotionally resonant cinematic scene"
     ),
-    "image_type": "2D illustrated oil-painting style",
-    "editing_style": "slow Ken Burns zoom/pan, soft dissolve transitions, gentle sparkle particle effects",
-    "color_palette": "warm earth tones — golden yellows, soft oranges, muted greens, warm browns, golden hour lighting",
-    "mood": "cinematic emotional storybook",
+    "image_type": "cinematic photorealistic 3D illustration",
+    "editing_style": "slow Ken Burns zoom/pan with dramatic push-ins, soft dissolve transitions, emotional pacing",
+    "color_palette": "warm cinematic tones — deep golds, rich ambers, dramatic shadows, volumetric light rays",
+    "mood": "dramatic cinematic emotional",
 }
 
-IMAGE_STYLE_PREFIX = (
-    "2D digital illustration with soft oil-painting textures, "
-    "clean character outlines, expressive faces, warm earth-tone palette "
-    "(golden yellows, soft oranges, muted greens, warm browns), "
-    "soft gradient background, golden hour warm lighting, "
-    "storybook quality, 16:9 wide cinematic composition. "
-)
+# ---------------------------------------------------------------------------
+# Style profile helpers
+# ---------------------------------------------------------------------------
+
+def _get_image_style_prefix() -> str:
+    """Return the IMAGE_STYLE_PREFIX for the current IMAGE_STYLE_PROFILE.
+
+    Set IMAGE_STYLE_PROFILE environment variable to select a preset:
+      cinematic   — photorealistic 3D renders, dramatic lighting (default, matches Tamil story channels)
+      illustrated — 2D oil-painting storybook illustration (previous default)
+      anime       — anime/manga cel-shaded style
+      minimal     — clean minimal flat design
+    """
+    profile = (os.environ.get("IMAGE_STYLE_PROFILE") or "cinematic").strip().lower()
+    if profile in ("illustrated", "2d", "storybook", "oil"):
+        return (
+            "2D digital illustration with soft oil-painting textures, "
+            "clean character outlines, expressive faces, warm earth-tone palette "
+            "(golden yellows, soft oranges, muted greens, warm browns), "
+            "soft gradient background, golden hour warm lighting, "
+            "storybook quality, 16:9 wide cinematic composition. "
+        )
+    if profile in ("anime", "manga"):
+        return (
+            "Anime/manga style illustration, clean cel-shading, vivid saturated colors, "
+            "detailed expressive character designs, dynamic composition, "
+            "16:9 cinematic widescreen. "
+        )
+    if profile in ("minimal", "flat"):
+        return (
+            "Clean minimalist flat design illustration, bold simple shapes, "
+            "limited color palette, modern graphic style, 16:9 composition. "
+        )
+    # Default: cinematic photorealistic (matches Thagaval Thalam / Tamil story YouTube channels)
+    return (
+        "Cinematic photorealistic 3D illustration, ultra-detailed, "
+        "dramatic volumetric lighting with warm golden rays and deep atmospheric shadows, "
+        "highly detailed realistic characters with expressive faces and natural skin textures, "
+        "richly detailed Indian/South Asian cultural setting and period-accurate costumes, "
+        "16:9 wide cinematic composition with shallow depth of field, "
+        "emotionally resonant scene, Unreal Engine quality render. "
+    )
+
+
+IMAGE_STYLE_PREFIX: str = _get_image_style_prefix()
 
 TTS_CHAR_LIMIT = 4800
 
@@ -615,7 +654,13 @@ def _env_truthy(name: str, default: bool = True) -> bool:
 
 
 def _meta_ai_style_extra() -> str:
-    prof = (os.environ.get("IMAGE_STYLE_PROFILE") or "").strip().lower()
+    """Return an additional style prefix string for special profiles.
+
+    For the main style profiles (cinematic, illustrated, etc.), this is empty
+    because the style is already embedded in IMAGE_STYLE_PREFIX.
+    Extra modifiers only apply for social/feed optimized variants.
+    """
+    prof = (os.environ.get("IMAGE_STYLE_PROFILE") or "cinematic").strip().lower()
     if prof in ("meta", "meta-ai", "meta_ai", "social", "feed"):
         return (
             "Social short-form polish: bold readable composition, vivid balanced colors, "
