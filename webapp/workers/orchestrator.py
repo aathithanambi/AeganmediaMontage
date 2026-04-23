@@ -226,6 +226,10 @@ def run_pipeline(prompt_file: str) -> None:
     uploaded_audio = payload.get("uploadedAudioPath", "")
     form_audio_lang = (payload.get("audioLanguage") or "").strip().lower()
     form_subtitle_lang = (payload.get("subtitleLanguage") or "").strip().lower()
+    # Track whether the dashboard/API caller explicitly set this flag.
+    # If it was NOT in the payload the caller is a CLI run and AUTO_SUBTITLES_FOR_AUDIO
+    # is allowed to apply.  If it IS in the payload the user's choice is final.
+    subtitle_explicitly_set = "enableSubtitles" in payload
     enable_subtitles = payload.get("enableSubtitles", False)
     enable_watermark = payload.get("enableWatermark", False)
     clone_voice = payload.get("cloneVoice", False)
@@ -389,9 +393,11 @@ def run_pipeline(prompt_file: str) -> None:
             _log(f"Timeline segments after budget merge: {len(merged_timings)} (cap {max_scenes_budget})")
 
             # Split any segment longer than MAX_SEGMENT_DURATION seconds so that
-            # a long opening sentence (e.g. 12s) doesn't hold a single image on
-            # screen while the audio narrates multiple distinct story moments.
-            max_seg_dur = float(os.environ.get("MAX_SEGMENT_DURATION", "6"))
+            # a long sentence (e.g. 8s) doesn't hold a single image on screen
+            # while the audio narrates multiple distinct story moments.
+            # Default 4s gives ~3–4 images per 12–16s of narration — matching
+            # the pacing of reference Tamil story channels (3–4s per image).
+            max_seg_dur = float(os.environ.get("MAX_SEGMENT_DURATION", "4"))
             before_split = len(merged_timings)
             merged_timings = _split_long_segments(merged_timings, max_segment_dur=max_seg_dur)
             if len(merged_timings) != before_split:
@@ -496,12 +502,26 @@ def run_pipeline(prompt_file: str) -> None:
 
     narration_sections = [s.get("narration", "") for s in scene_plan]
 
-    # Auto-enable subtitles when audio is uploaded + transcript is available and
-    # AUTO_SUBTITLES_FOR_AUDIO=1 is set (or user explicitly enabled them).
+    # AUTO_SUBTITLES_FOR_AUDIO is a server-side CLI escape hatch ONLY.
+    # It is IGNORED when the dashboard/API caller explicitly set enableSubtitles
+    # (subtitle_explicitly_set=True), because the user made a deliberate choice.
+    # It only applies to CLI runs where no enableSubtitles key is in the payload.
     auto_sub = _env_truthy("AUTO_SUBTITLES_FOR_AUDIO", False)
-    if not enable_subtitles and auto_sub and has_custom_audio and audio_transcript:
-        _log("AUTO_SUBTITLES_FOR_AUDIO: enabling subtitles from transcript")
+    if (
+        not enable_subtitles
+        and auto_sub
+        and not subtitle_explicitly_set   # ← never override an explicit dashboard "No"
+        and has_custom_audio
+        and audio_transcript
+    ):
+        _log("AUTO_SUBTITLES_FOR_AUDIO CLI override: enabling subtitles from transcript")
         enable_subtitles = True
+
+    _log(
+        f"Subtitles write-on-video: {'YES' if enable_subtitles else 'NO'}"
+        f"  (explicitly_set={subtitle_explicitly_set},"
+        f"  auto_sub_env={auto_sub})"
+    )
 
     # Subtitles
     if not enable_subtitles:
@@ -615,11 +635,15 @@ def run_pipeline(prompt_file: str) -> None:
         min_scene_sec = 0.35 if merged_timings else 3.0
     ff_preset = os.environ.get("FFMPEG_SEGMENT_PRESET", "fast")
 
+    # Determine which language the subtitles are actually in so video_builder
+    # can load the correct Noto font (Tamil, Hindi, Telugu, etc.).
+    effective_sub_lang = (subtitle_lang or audio_lang or "english").strip().lower()
     video_path = step_compose_slideshow(
         images, audio_path, final_path,
         scene_plan=scene_plan,
         sections=subtitle_sections,
         enable_subtitles=enable_subtitles,
+        subtitle_language=effective_sub_lang,
         min_scene_duration=min_scene_sec,
         x264_preset=ff_preset,
     )

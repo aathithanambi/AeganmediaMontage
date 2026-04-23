@@ -25,6 +25,62 @@ from webapp.workers.shared import (
 )
 
 # ---------------------------------------------------------------------------
+# Font path resolution for subtitle rendering
+# ---------------------------------------------------------------------------
+
+# Noto Sans font paths installed by fonts-noto-core + fonts-noto-hinted on Debian/Ubuntu.
+# Key: language name (lowercase, as used in audio_lang).
+# Value: list of candidate font paths tried in order; first existing file wins.
+_NOTO_FONT_BASE = "/usr/share/fonts/truetype/noto"
+_LANG_FONT_MAP: dict[str, list[str]] = {
+    "tamil":     [f"{_NOTO_FONT_BASE}/NotoSansTamil-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansTamil[wdth,wght].ttf"],
+    "hindi":     [f"{_NOTO_FONT_BASE}/NotoSansDevanagari-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansDevanagari[wdth,wght].ttf"],
+    "telugu":    [f"{_NOTO_FONT_BASE}/NotoSansTelugu-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansTelugu[wdth,wght].ttf"],
+    "kannada":   [f"{_NOTO_FONT_BASE}/NotoSansKannada-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansKannada[wdth,wght].ttf"],
+    "malayalam": [f"{_NOTO_FONT_BASE}/NotoSansMalayalam-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansMalayalam[wdth,wght].ttf"],
+    "bengali":   [f"{_NOTO_FONT_BASE}/NotoSansBengali-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansBengali[wdth,wght].ttf"],
+    "gujarati":  [f"{_NOTO_FONT_BASE}/NotoSansGujarati-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansGujarati[wdth,wght].ttf"],
+    "punjabi":   [f"{_NOTO_FONT_BASE}/NotoSansGurmukhi-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansGurmukhi[wdth,wght].ttf"],
+    "marathi":   [f"{_NOTO_FONT_BASE}/NotoSansDevanagari-Regular.ttf"],  # same script as Hindi
+    "arabic":    [f"{_NOTO_FONT_BASE}/NotoNaskhArabic-Regular.ttf",
+                  f"{_NOTO_FONT_BASE}/NotoSansArabic-Regular.ttf"],
+    "urdu":      [f"{_NOTO_FONT_BASE}/NotoNaskhArabic-Regular.ttf"],
+    "japanese":  [f"{_NOTO_FONT_BASE}/NotoSansCJK-Regular.ttc",
+                  f"{_NOTO_FONT_BASE}/NotoSansJP-Regular.ttf"],
+    "korean":    [f"{_NOTO_FONT_BASE}/NotoSansCJK-Regular.ttc",
+                  f"{_NOTO_FONT_BASE}/NotoSansKR-Regular.ttf"],
+}
+# Fallback Latin/common font
+_NOTO_SANS_FALLBACK = [
+    f"{_NOTO_FONT_BASE}/NotoSans-Regular.ttf",
+    f"{_NOTO_FONT_BASE}/NotoSans[Condensed,ExtraCondensed]-Regular.ttf",
+]
+
+
+def _get_subtitle_font(language: str) -> str:
+    """Return the best available fontfile path for the given language.
+
+    Checks candidates in order and returns the first file that exists on disk.
+    Falls back to NotoSans (Latin) if no specific font is found.
+    Returns an empty string when no font file exists (drawtext uses system default).
+    """
+    lang = (language or "").strip().lower()
+    candidates = _LANG_FONT_MAP.get(lang, []) + _NOTO_SANS_FALLBACK
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    _log(f"No Noto font found for '{lang}' — subtitle will use system default font")
+    return ""
+
+# ---------------------------------------------------------------------------
 # Video composition (FFmpeg with audio-synced timing)
 # ---------------------------------------------------------------------------
 
@@ -60,6 +116,7 @@ def step_compose_slideshow(
     sections: list[str] | None = None,
     enable_subtitles: bool = False,
     *,
+    subtitle_language: str = "english",
     min_scene_duration: float = 3.0,
     x264_preset: str = "fast",
 ) -> str | None:
@@ -70,9 +127,11 @@ def step_compose_slideshow(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     W, H, FPS = 1920, 1080, 30
     # Crossfade duration in seconds. Shorter = crisper cuts, less double-exposure blur.
-    # Default 0.3s: fast enough to feel like a clean cut but with a subtle dissolve.
-    # Set XFADE_DURATION=0.5 for softer dissolves, XFADE_DURATION=0.15 for near-instant cuts.
-    FADE_DUR = float(os.environ.get("XFADE_DURATION", "0.3"))
+    # 0.15s is the sweet spot: invisible at normal playback speed but still softer than
+    # a hard cut. 0.3s and above creates a visible ghost overlay (double-exposure effect)
+    # when two similar-background scenes cross-dissolve.
+    # Set XFADE_DURATION=0.3 for a softer dissolve, XFADE_DURATION=0.08 for near-instant cuts.
+    FADE_DUR = float(os.environ.get("XFADE_DURATION", "0.15"))
 
     floor_dur = max(0.12, float(min_scene_duration))
     durations: list[float] = []
@@ -137,6 +196,10 @@ def step_compose_slideshow(
         (1.18, 1.0,  "center"),   # slow zoom out   — closing beat
     ]
 
+    # Resolve subtitle font once for all segments
+    sub_font_path = _get_subtitle_font(subtitle_language) if enable_subtitles else ""
+    _log(f"Subtitle font: {sub_font_path or '(system default)'} for language '{subtitle_language}'")
+
     try:
         for i, img in enumerate(images):
             seg = temp_dir / f"seg_{i:04d}.mp4"
@@ -165,18 +228,19 @@ def step_compose_slideshow(
             ]
 
             if enable_subtitles and sections and i < len(sections) and sections[i].strip():
-                # Split long subtitle lines at ~45 chars per line for readability
                 raw_sub = sections[i].strip()[:160]
                 sub_text = _escape_drawtext(raw_sub)
                 sub_end = max(0.15, seg_dur - min(0.4, seg_dur * 0.15))
-                # Style matches Tamil story YouTube channels: bold white text,
-                # dark semi-transparent shadow box, centered near bottom
+                # Build drawtext with language-specific Noto font so Indic
+                # scripts (Tamil, Hindi, Telugu, etc.) render correctly.
+                font_clause = f":fontfile='{sub_font_path}'" if sub_font_path else ""
                 vf_parts.append(
                     f"drawtext=text='{sub_text}'"
-                    f":fontsize=38:fontcolor=white@0.95"
-                    f":borderw=3:bordercolor=black@0.85"
-                    f":box=1:boxcolor=black@0.35:boxborderw=8"
-                    f":x=(w-tw)/2:y=h*0.88"
+                    f"{font_clause}"
+                    f":fontsize=40:fontcolor=white@0.97"
+                    f":borderw=3:bordercolor=black@0.90"
+                    f":box=1:boxcolor=black@0.45:boxborderw=10"
+                    f":x=(w-tw)/2:y=h*0.87"
                     f":enable='between(t,0.08,{sub_end:.2f})'"
                 )
 

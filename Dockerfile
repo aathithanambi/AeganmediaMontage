@@ -6,9 +6,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps: ffmpeg, CA certs
+# System deps: ffmpeg, CA certs, Noto fonts for Indic subtitle rendering
+# fonts-noto-core  — NotoSans base (Latin, Greek, Cyrillic, etc.)
+# fonts-noto-hinted — Tamil, Devanagari (Hindi), Telugu, Kannada, Malayalam,
+#                    Bengali, Gujarati, Punjabi, Arabic and more
+# Without these fonts ffmpeg drawtext renders Indic characters as □□□□ boxes.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl ffmpeg \
+    fonts-noto-core \
+    fonts-noto-hinted \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user

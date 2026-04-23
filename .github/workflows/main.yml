@@ -150,6 +150,7 @@ jobs:
               "FREE_TIER_MAX_DURATION=10" \
               "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
               "ELEVENLABS_API_KEY=${{ secrets.ELEVENLABS_API_KEY }}" \
+              "AUTO_SUBTITLES_FOR_AUDIO=0" \
               > $DATA_DIR/.env
             chmod 600 $DATA_DIR/.env
             echo "Environment file written (secrets masked)"
