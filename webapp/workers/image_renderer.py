@@ -287,7 +287,10 @@ def step_fetch_images(
 
         # ── Step A: base image prompt ────────────────────────────────────────
         image_prompt = scene.get("image_prompt") or scene.get("search_query") or "abstract background"
-        if "2d" not in image_prompt.lower() and "illustrat" not in image_prompt.lower() and "oil" not in image_prompt.lower():
+        # Prepend style prefix only if the prompt doesn't already contain it.
+        # Check the first 80 chars against the first 20 chars of the prefix to be style-agnostic.
+        style_anchor = IMAGE_STYLE_PREFIX[:20].lower()
+        if style_anchor not in image_prompt.lower()[:80]:
             image_prompt = f"{IMAGE_STYLE_PREFIX}{image_prompt}"
         if meta_extra and meta_extra.lower() not in image_prompt.lower():
             image_prompt = f"{meta_extra}{image_prompt}"
@@ -311,8 +314,15 @@ def step_fetch_images(
 
         # ── Step C: prepend character lock block ─────────────────────────────
         lock_block = _build_character_lock_block(character_data, outfit_overrides=outfit_overrides)
+        camera_angle = scene.get("camera_angle", "").strip()
+        scene_header = f"--- SCENE {i + 1}"
+        if camera_angle:
+            scene_header += f" [{camera_angle.upper()} SHOT]"
+        scene_header += " ---"
         if lock_block:
-            image_prompt = f"{lock_block}\n\n--- SCENE {i + 1} ---\n{image_prompt}"
+            image_prompt = f"{lock_block}\n\n{scene_header}\n{image_prompt}"
+        elif camera_angle:
+            image_prompt = f"{scene_header}\n{image_prompt}"
 
         # ── Step D: append "previous appearance" anchor for returning characters ──
         scene_chars = _extract_scene_character_names(scene, character_data)
