@@ -163,7 +163,11 @@
         Upload your own narration or audio track. The pipeline will transcribe it sentence-by-sentence, extract characters and scenes, and create visuals that match your audio word-by-word.
       </p>
     </div>
-    <button type="submit" class="btn btn-primary" id="create-project-btn"
+    <button
+      type="submit"
+      class="btn btn-primary"
+      id="create-project-btn"
+      data-default-label="Create Project{% if current_user.role not in ['admin', 'manager'] %} ({{ credit_cost }} credit){% endif %}"
       {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}disabled title="Account pending admin approval"
       {% elif current_user.role not in ["admin", "manager"] and current_user.get("credits", 0) <= 0 %}{% endif %}>
       {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}
@@ -356,6 +360,7 @@
   var uploadFill = document.getElementById("upload-progress-fill");
   var uploadText = document.getElementById("upload-progress-text");
   if (createForm && createBtn && createStatus && uploadWrap && uploadFill && uploadText) {
+    var defaultBtnLabel = createBtn.getAttribute("data-default-label") || "Create Project";
     createForm.addEventListener("submit", function (ev) {
       ev.preventDefault();
       createBtn.disabled = true;
@@ -383,7 +388,7 @@
         }
         alert("Failed to start project: " + (xhr.responseText || ("HTTP " + xhr.status)));
         createBtn.disabled = false;
-        createBtn.textContent = "Create Project{% if current_user.role not in [\"admin\", \"manager\"] %} ({{ credit_cost }} credit){% endif %}";
+        createBtn.textContent = defaultBtnLabel;
         createStatus.style.display = "none";
         uploadWrap.style.display = "none";
       };
@@ -391,7 +396,7 @@
       xhr.onerror = function () {
         alert("Network error while uploading. Please try again.");
         createBtn.disabled = false;
-        createBtn.textContent = "Create Project{% if current_user.role not in [\"admin\", \"manager\"] %} ({{ credit_cost }} credit){% endif %}";
+        createBtn.textContent = defaultBtnLabel;
         createStatus.style.display = "none";
         uploadWrap.style.display = "none";
       };
