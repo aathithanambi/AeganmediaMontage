@@ -33,6 +33,14 @@ app.mount("/static", StaticFiles(directory=str(base_dir / "static")), name="stat
 _cleanup_task: asyncio.Task | None = None
 
 _PIPELINE_CATALOG: list[dict[str, str]] = []
+DEFAULT_REFERENCE_URLS: list[str] = [
+    "https://www.youtube.com/watch?v=XZIwlfkS2a0",
+    "https://www.youtube.com/watch?v=3hTiReeo5S8",
+    "https://www.youtube.com/watch?v=NEXLlOjynqQ",
+    "https://www.youtube.com/watch?v=-iUtLgOsWdE",
+    "https://www.youtube.com/watch?v=dbkNMW5QkzI",
+    "https://www.youtube.com/watch?v=lUUbV-Dqsvc",
+]
 
 
 def _load_pipeline_catalog() -> list[dict[str, str]]:
@@ -172,6 +180,18 @@ def _prompt_without_reference_prefix(prompt: str, reference_url: str | None) -> 
         rest = "\n".join(lines[1:]).lstrip()
         return rest or prompt
     return prompt
+
+
+def _pick_reference_url(raw_reference: str | None) -> str | None:
+    """Select one usable reference URL from user input or defaults."""
+    raw = (raw_reference or "").strip()
+    if raw:
+        candidates = re.findall(r"https?://[^\s,;]+", raw)
+        if candidates:
+            return candidates[0].strip()
+        if raw.startswith(("http://", "https://")):
+            return raw
+    return DEFAULT_REFERENCE_URLS[0] if DEFAULT_REFERENCE_URLS else None
 
 
 @app.on_event("startup")
@@ -376,6 +396,7 @@ def dashboard(request: Request):
             started_project_id=started_project_id,
             started_run_id=started_run_id,
             rerun_prefill=rerun_prefill,
+            default_reference_urls=DEFAULT_REFERENCE_URLS,
         ),
     )
 
@@ -439,9 +460,10 @@ async def create_project_from_form(
                 {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
             )
 
+    selected_reference_url = _pick_reference_url(reference_url)
     full_prompt = prompt
-    if reference_url.strip():
-        full_prompt = f"Reference: {reference_url.strip()}\n\n{prompt}"
+    if selected_reference_url:
+        full_prompt = f"Reference: {selected_reference_url}\n\n{prompt}"
 
     is_rerun = bool(rerun_source_run_id.strip())
     base_slug = _sanitize_project_slug(title)
@@ -513,7 +535,7 @@ async def create_project_from_form(
         "projectId": project_id,
         "title": title,
         "prompt": full_prompt,
-        "referenceUrl": reference_url.strip() or None,
+        "referenceUrl": selected_reference_url,
         "audioLanguage": audio_language.strip() or None,
         "subtitleLanguage": subtitle_language.strip() or None,
         "enableSubtitles": enable_subtitles.strip().lower() == "yes",
@@ -1225,9 +1247,10 @@ def enqueue_pipeline_run(
                 {"$inc": {"credits": -cost}, "$set": {"updatedAt": datetime.now(UTC)}},
             )
 
+    selected_reference_url = _pick_reference_url(reference_url)
     full_prompt = prompt
-    if reference_url.strip():
-        full_prompt = f"Reference: {reference_url.strip()}\n\n{prompt}"
+    if selected_reference_url:
+        full_prompt = f"Reference: {selected_reference_url}\n\n{prompt}"
 
     now = datetime.now(UTC)
     run_doc = {
@@ -1235,7 +1258,7 @@ def enqueue_pipeline_run(
         "projectId": project_id,
         "title": title,
         "prompt": full_prompt,
-        "referenceUrl": reference_url.strip() or None,
+        "referenceUrl": selected_reference_url,
         "status": "queued",
         "requestedBy": str(actor["_id"]),
         "creditsCharged": 0 if _is_privileged(actor) else settings.credit_cost_per_run,

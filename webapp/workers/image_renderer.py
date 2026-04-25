@@ -279,6 +279,15 @@ def step_fetch_images(
 
     backend = (os.environ.get("IMAGE_BACKEND") or "gemini").strip().lower()
     allow_image_text = _env_truthy("IMAGE_ALLOW_TEXT", False)
+    strict_character_lock = _env_truthy("STRICT_CHARACTER_LOCK", False)
+    lock_background_from_scene = 0
+    lock_background_description = (os.environ.get("LOCK_BACKGROUND_DESCRIPTION") or "").strip()
+    try:
+        lock_background_from_scene = max(
+            0, int((os.environ.get("LOCK_BACKGROUND_FROM_SCENE") or "0").strip() or "0")
+        )
+    except ValueError:
+        lock_background_from_scene = 0
     if backend not in ("gemini", "imagen", "auto"):
         _log(f"IMAGE_BACKEND={backend!r} invalid — defaulting to gemini")
         backend = "gemini"
@@ -288,11 +297,23 @@ def step_fetch_images(
     scene_groups = _build_scene_groups(scene_plan, character_data)
     n_groups = len(scene_groups)
     parallel = max(1, min(8, int(os.environ.get("IMAGEN_PARALLEL", "3")), n_groups))
+    if strict_character_lock:
+        # Force fully sequential generation for maximum appearance stability.
+        scene_groups = [list(range(len(scene_plan)))] if scene_plan else []
+        n_groups = len(scene_groups)
+        parallel = 1
     _log(
         f"Generating {len(scene_plan)} images: "
         f"{n_groups} character-group(s), parallel={parallel} groups at a time "
         f"(sequential within each group)"
     )
+    if strict_character_lock:
+        _log("STRICT_CHARACTER_LOCK=1 active: serial generation with stronger continuity rules")
+    if lock_background_from_scene > 0 and lock_background_description:
+        _log(
+            "Background lock active: "
+            f"scene {lock_background_from_scene}+ uses locked environment description"
+        )
 
     cache_enabled = _env_truthy("IMAGE_PROMPT_CACHE", True)
     cache_root = output_dir.parent / "image_gen_cache"
@@ -368,6 +389,26 @@ def step_fetch_images(
             image_prompt += (
                 "\n\nCHARACTER CONTINUITY (copy exactly from previous scene):\n"
                 + "\n".join(prev_refs)
+            )
+
+        if strict_character_lock:
+            image_prompt += (
+                "\n\nSTRICT CHARACTER LOCK MODE:\n"
+                "Render each named character with EXACT same face geometry, age, skin tone, hair style/color, and outfit details as prior scenes.\n"
+                "No drift, no reinterpretation, no alternate costume, and no duplicate clones."
+            )
+
+        if (
+            lock_background_from_scene > 0
+            and (i + 1) >= lock_background_from_scene
+            and lock_background_description
+        ):
+            image_prompt += (
+                "\n\nBACKGROUND LOCK MODE:\n"
+                f"Keep the SAME core environment from scene {lock_background_from_scene} onward. "
+                f"Locked environment: {lock_background_description[:450]}.\n"
+                "You may vary camera angle, lens distance, and subject placement, "
+                "but do not change location, architecture, terrain, or era."
             )
 
         if not allow_image_text:

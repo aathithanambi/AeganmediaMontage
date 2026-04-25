@@ -97,10 +97,22 @@
     <div class="form-group">
       <label for="prompt">Prompt / Description</label>
       <textarea name="prompt" id="prompt" rows="4" placeholder="Describe the video you want to create. You can also paste a YouTube URL as reference..." required>{{ rerun_prefill.prompt if rerun_prefill else '' }}</textarea>
+      <p class="muted" style="font-size:0.82rem;margin-top:4px">
+        Optional runtime controls in prompt (one per line):<br>
+        <code>LOCK_BACKGROUND_FROM_SCENE=8</code>,
+        <code>TARGET_SCENE_SECONDS=3.0</code>,
+        <code>STRICT_CHARACTER_LOCK=1</code>
+      </p>
     </div>
     <div class="form-group">
       <label for="reference_url">Reference Video URL <span class="muted">(optional &mdash; YouTube, TikTok, Reel, or any video URL)</span></label>
-      <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." value="{{ rerun_prefill.referenceUrl if rerun_prefill else '' }}" />
+      <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." value="{{ rerun_prefill.referenceUrl if rerun_prefill else (default_reference_urls[0] if default_reference_urls else '') }}" />
+      {% if default_reference_urls %}
+      <p class="muted" style="font-size:0.82rem;margin-top:4px">
+        Default sample references are configured. If you leave this field unchanged, the app uses:
+        <a href="{{ default_reference_urls[0] }}" target="_blank" rel="noopener">{{ default_reference_urls[0] }}</a>.
+      </p>
+      {% endif %}
     </div>
     <div class="form-row" id="clone-voice-row" style="display:none">
       <div class="form-group">

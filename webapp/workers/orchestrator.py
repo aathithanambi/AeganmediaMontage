@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -72,6 +73,79 @@ from webapp.workers.video_builder import (
     _zip_scene_images,
     step_compose_slideshow,
 )
+
+# ---------------------------------------------------------------------------
+# Runtime control directives from prompt
+# ---------------------------------------------------------------------------
+
+_RUNTIME_DIRECTIVE_RE = re.compile(
+    r"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*([^\n\r#]+)\s*$",
+    re.MULTILINE,
+)
+
+
+def _parse_boolish(value: str) -> bool | None:
+    raw = (value or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _extract_runtime_controls(raw_prompt: str) -> tuple[str, dict[str, str]]:
+    """Extract KEY=VALUE runtime controls and strip them from user content."""
+    if not raw_prompt:
+        return "", {}
+    controls: dict[str, str] = {}
+    out_lines: list[str] = []
+    for line in raw_prompt.splitlines():
+        m = _RUNTIME_DIRECTIVE_RE.match(line)
+        if m:
+            key = m.group(1).strip().upper()
+            val = m.group(2).strip()
+            controls[key] = val
+            continue
+        out_lines.append(line)
+    cleaned = "\n".join(out_lines).strip()
+    return cleaned, controls
+
+
+def _apply_runtime_controls(controls: dict[str, str]) -> None:
+    """Apply supported prompt directives as env vars for this run."""
+    if not controls:
+        return
+
+    if "TARGET_SCENE_SECONDS" in controls:
+        try:
+            tss = max(1.5, min(12.0, float(controls["TARGET_SCENE_SECONDS"])))
+            os.environ["TARGET_SCENE_SECONDS"] = str(tss)
+            _log(f"Runtime control: TARGET_SCENE_SECONDS={tss}")
+        except ValueError:
+            _log("Runtime control ignored: TARGET_SCENE_SECONDS must be a number")
+
+    if "LOCK_BACKGROUND_FROM_SCENE" in controls:
+        try:
+            lock_scene = max(1, int(float(controls["LOCK_BACKGROUND_FROM_SCENE"])))
+            os.environ["LOCK_BACKGROUND_FROM_SCENE"] = str(lock_scene)
+            _log(f"Runtime control: LOCK_BACKGROUND_FROM_SCENE={lock_scene}")
+        except ValueError:
+            _log("Runtime control ignored: LOCK_BACKGROUND_FROM_SCENE must be an integer")
+
+    if "STRICT_CHARACTER_LOCK" in controls:
+        parsed = _parse_boolish(controls["STRICT_CHARACTER_LOCK"])
+        if parsed is None:
+            _log("Runtime control ignored: STRICT_CHARACTER_LOCK must be true/false or 1/0")
+        else:
+            os.environ["STRICT_CHARACTER_LOCK"] = "1" if parsed else "0"
+            _log(f"Runtime control: STRICT_CHARACTER_LOCK={'1' if parsed else '0'}")
+
+    # Optional override if user wants to specify the lock environment explicitly.
+    if "LOCK_BACKGROUND_DESCRIPTION" in controls:
+        desc = controls["LOCK_BACKGROUND_DESCRIPTION"].strip()
+        if desc:
+            os.environ["LOCK_BACKGROUND_DESCRIPTION"] = desc[:500]
+            _log("Runtime control: LOCK_BACKGROUND_DESCRIPTION provided")
 
 # ---------------------------------------------------------------------------
 # Agent checkpoint helpers
@@ -238,6 +312,11 @@ def run_pipeline(prompt_file: str) -> None:
     project_id = payload.get("projectId", "web-project")
     title = payload.get("title", project_id)
     raw_prompt = payload.get("prompt", "")
+    cleaned_prompt, runtime_controls = _extract_runtime_controls(raw_prompt)
+    if runtime_controls:
+        _log(f"Runtime controls detected in prompt: {', '.join(sorted(runtime_controls.keys()))}")
+        _apply_runtime_controls(runtime_controls)
+    raw_prompt = cleaned_prompt or raw_prompt
     ref_url = payload.get("referenceUrl", "")
     uploaded_audio = payload.get("uploadedAudioPath", "")
     form_audio_lang = (payload.get("audioLanguage") or "").strip().lower()
@@ -526,6 +605,31 @@ def run_pipeline(prompt_file: str) -> None:
             style_notes=style_notes,
         )
         _save_checkpoint(project_dir, "scenes_v1", scene_plan)
+
+    # Optional background lock: from a given scene onward, keep one environment.
+    lock_scene_raw = (os.environ.get("LOCK_BACKGROUND_FROM_SCENE") or "").strip()
+    if lock_scene_raw and scene_plan:
+        try:
+            lock_scene = max(1, int(lock_scene_raw))
+            if lock_scene <= len(scene_plan):
+                src = scene_plan[lock_scene - 1] or {}
+                bg_desc = (
+                    (os.environ.get("LOCK_BACKGROUND_DESCRIPTION") or "").strip()
+                    or str(src.get("image_prompt") or src.get("search_query") or "").strip()
+                )
+                if bg_desc:
+                    os.environ["LOCK_BACKGROUND_DESCRIPTION"] = bg_desc[:500]
+                    _log(
+                        "Background lock enabled "
+                        f"(from scene {lock_scene}, source scene prompt captured)"
+                    )
+            else:
+                _log(
+                    "Background lock ignored: "
+                    f"LOCK_BACKGROUND_FROM_SCENE={lock_scene} exceeds scene count={len(scene_plan)}"
+                )
+        except ValueError:
+            _log("Background lock ignored: LOCK_BACKGROUND_FROM_SCENE must be an integer")
     done_stages.append("scenes")
     _emit_progress_snapshot(done_stages, "subtitles", _progress_pct(len(done_stages), 0))
 
