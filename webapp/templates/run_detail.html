@@ -176,6 +176,9 @@ function cancelRun() {
   const section = document.getElementById("progress-section");
   const etaText = document.getElementById("eta-text");
   const stageList = document.getElementById("stage-list");
+  let estTotalSec = null;
+  let remainingSec = null;
+  let etaTicker = null;
 
   const initialSnap = {{ (run.get("progressSnapshot") or {}) | tojson }};
 
@@ -232,6 +235,49 @@ function cancelRun() {
     return best;
   }
 
+  function parseEtaSeconds(raw) {
+    if (!raw || typeof raw !== "string") return null;
+    const m = raw.match(/(\d+)\s*m\s*remaining/i);
+    if (m) return parseInt(m[1], 10) * 60;
+    const s = raw.match(/(\d+)\s*s\s*remaining/i);
+    if (s) return parseInt(s[1], 10);
+    return null;
+  }
+
+  function fmtSec(total) {
+    const sec = Math.max(0, Math.floor(total || 0));
+    if (sec >= 3600) {
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      return h + "h " + m + "m " + s + "s";
+    }
+    if (sec >= 60) return Math.floor(sec / 60) + "m " + (sec % 60) + "s";
+    return sec + "s";
+  }
+
+  function renderEta(elapsed) {
+    if (!etaText) return;
+    const parts = [];
+    if (elapsed > 0) parts.push(fmtSec(elapsed) + " elapsed");
+    if (estTotalSec !== null) parts.push("~" + fmtSec(estTotalSec) + " total");
+    if (remainingSec !== null) parts.push(fmtSec(remainingSec) + " remaining");
+    etaText.textContent = parts.join(" • ");
+  }
+
+  function startEtaTicker() {
+    if (etaTicker) return;
+    etaTicker = setInterval(function() {
+      if (remainingSec !== null && remainingSec > 0) {
+        remainingSec = Math.max(0, remainingSec - 1);
+      }
+      if (estTotalSec !== null && remainingSec !== null) {
+        const liveElapsed = Math.max(0, estTotalSec - remainingSec);
+        renderEta(liveElapsed);
+      }
+    }, 1000);
+  }
+
   function poll() {
     fetch("/api/run/" + runId + "/progress")
       .then(r => r.json())
@@ -247,16 +293,28 @@ function cancelRun() {
         if (etaText) {
           const elapsed = data.elapsedSeconds || 0;
           const eta = data.eta || "";
-          let parts = [];
-          if (elapsed > 0) {
-            if (elapsed > 60) parts.push(Math.floor(elapsed/60) + "m " + Math.floor(elapsed%60) + "s elapsed");
-            else parts.push(Math.floor(elapsed) + "s elapsed");
+          const pctForEta = Math.max(1, Math.min(99, pct));
+          const etaFromServer = parseEtaSeconds(eta);
+          let computedRemaining = etaFromServer;
+          if (computedRemaining === null && elapsed > 0) {
+            const calcTotal = Math.floor(elapsed / (pctForEta / 100));
+            computedRemaining = Math.max(0, calcTotal - elapsed);
           }
-          if (eta) parts.push(eta);
-          etaText.textContent = parts.join(" \u2022 ");
+          if (computedRemaining !== null) {
+            // Keep ETA monotonic (do not jump upwards on noisy estimates).
+            if (remainingSec === null) {
+              remainingSec = computedRemaining;
+            } else {
+              remainingSec = Math.min(remainingSec, computedRemaining);
+            }
+            estTotalSec = Math.max(Math.floor(elapsed), Math.floor(elapsed + remainingSec));
+            startEtaTicker();
+          }
+          renderEta(elapsed);
         }
 
         if (data.status === "completed" || data.status === "failed") {
+          if (etaTicker) clearInterval(etaTicker);
           location.reload();
           return;
         }

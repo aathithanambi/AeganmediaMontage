@@ -16,7 +16,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from lib.config_model import BudgetMode
+try:
+    from lib.config_model import BudgetMode
+except Exception:
+    # Keep cost tracking import-safe in runtimes where lib/ is not packaged.
+    class BudgetMode(str, Enum):
+        OBSERVE = "observe"
+        WARN = "warn"
+        CAP = "cap"
 
 
 class EntryStatus(str, Enum):

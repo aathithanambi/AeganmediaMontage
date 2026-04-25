@@ -414,8 +414,60 @@
 <!-- Manual Cleanup -->
 <section class="card">
   <h2>Manual Cleanup</h2>
-  <form method="post" action="/admin/run-cleanup" class="inline-form">
-    <button type="submit">Run Expired Video Cleanup</button>
-  </form>
+  {% if current_user.role == "admin" %}
+    <p class="muted" style="margin-bottom:10px">
+      Deletes generated project files to reclaim disk space. Running/queued projects are skipped.
+    </p>
+    <button type="button" id="full-cleanup-btn" class="danger">Run Full Project File Cleanup</button>
+  {% else %}
+    <p class="muted">Admin only</p>
+  {% endif %}
 </section>
+
+{% if current_user.role == "admin" %}
+<script>
+(function () {
+  const btn = document.getElementById("full-cleanup-btn");
+  if (!btn) return;
+
+  btn.addEventListener("click", async function () {
+    const warning = [
+      "Warning: This will remove generated project files to free disk space.",
+      "Completed videos/images/subtitle files may be deleted.",
+      "Running and queued projects are preserved.",
+      "",
+      "Do you want to continue?",
+    ].join("\n");
+    if (!confirm(warning)) return;
+
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Cleaning...";
+    try {
+      const resp = await fetch("/admin/run-cleanup", { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        throw new Error(data.detail || "Cleanup failed");
+      }
+      const info = data.cleanup || {};
+      alert(
+        "Cleanup completed.\n\n" +
+        "Project folders removed: " + (info.project_dirs_removed || 0) + "\n" +
+        "Video files removed: " + (info.videos_removed || 0) + "\n" +
+        "Video jobs marked deleted: " + (info.video_jobs_marked_deleted || 0) + "\n" +
+        "Runs updated: " + (info.pipeline_runs_updated || 0) + "\n" +
+        "Active projects skipped: " + (info.active_projects_skipped || 0) + "\n\n" +
+        "You will now be redirected to the home page."
+      );
+      window.location.href = "/";
+    } catch (err) {
+      alert("Cleanup failed: " + (err && err.message ? err.message : "Unknown error"));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

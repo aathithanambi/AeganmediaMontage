@@ -5,6 +5,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import yaml
 from bson import ObjectId
@@ -16,7 +17,7 @@ from jwt import InvalidTokenError
 from pymongo.errors import PyMongoError
 
 from webapp.bootstrap import run_bootstrap
-from webapp.cleanup import cleanup_expired_videos
+from webapp.cleanup import cleanup_all_project_files, cleanup_expired_videos
 from webapp.config import settings
 from webapp.database import get_db
 from webapp.api_keys import get_api_key_status, get_api_summary
@@ -299,9 +300,21 @@ def dashboard(request: Request):
         _public_run(r)
         for r in db.pipeline_runs.find({"requestedBy": user_id_str}).sort("createdAt", -1).limit(50)
     ]
+    project_started = request.query_params.get("project_started") == "1"
+    started_project_id = (request.query_params.get("project_id") or "").strip()
+    started_run_id = (request.query_params.get("run_id") or "").strip()
     return templates.TemplateResponse(
         request, "dashboard.html",
-        _template_context(request, jobs=jobs, runs=runs, pipelines=_PIPELINE_CATALOG, settings=settings),
+        _template_context(
+            request,
+            jobs=jobs,
+            runs=runs,
+            pipelines=_PIPELINE_CATALOG,
+            settings=settings,
+            project_started=project_started,
+            started_project_id=started_project_id,
+            started_run_id=started_run_id,
+        ),
     )
 
 
@@ -376,15 +389,32 @@ async def create_project_from_form(
                 status_code=400,
                 detail=f"Audio format {ext} not supported. Use: {', '.join(ALLOWED_AUDIO_EXTS)}",
             )
-        audio_data = await audio_file.read()
-        if len(audio_data) > MAX_AUDIO_SIZE:
-            raise HTTPException(status_code=400, detail="Audio file exceeds 50 MB limit")
-
         audio_dir = Path("projects") / project_id / "assets"
         audio_dir.mkdir(parents=True, exist_ok=True)
         safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", audio_file.filename)
         dest = audio_dir / f"uploaded_audio{ext}"
-        dest.write_bytes(audio_data)
+        del safe_name  # Name is normalized for safety; canonical file name is fixed.
+
+        max_mb = MAX_AUDIO_SIZE // (1024 * 1024)
+        total_size = 0
+        chunk_size = 1024 * 1024  # 1 MB
+        try:
+            with open(dest, "wb") as out:
+                while True:
+                    chunk = await audio_file.read(chunk_size)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > MAX_AUDIO_SIZE:
+                        out.close()
+                        dest.unlink(missing_ok=True)
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Audio file exceeds {max_mb} MB limit",
+                        )
+                    out.write(chunk)
+        finally:
+            await audio_file.close()
         uploaded_audio_path = str(dest)
 
     now = datetime.now(UTC)
@@ -411,8 +441,15 @@ async def create_project_from_form(
         "outputVideoPath": None,
         "error": None,
     }
-    db.pipeline_runs.insert_one(run_doc)
-    return RedirectResponse("/dashboard", status_code=303)
+    result = db.pipeline_runs.insert_one(run_doc)
+    q = urlencode(
+        {
+            "project_started": "1",
+            "project_id": project_id,
+            "run_id": str(result.inserted_id),
+        }
+    )
+    return RedirectResponse(f"/dashboard?{q}", status_code=303)
 
 
 @app.post("/profile")
@@ -910,9 +947,9 @@ def resolve_password_request(request: Request, request_id: str, status_value: st
 @app.post("/admin/run-cleanup")
 def run_cleanup(request: Request):
     actor = _require_user(request)
-    _require_role(actor, {"admin", "manager"})
-    cleaned = cleanup_expired_videos()
-    return JSONResponse({"cleaned": cleaned})
+    _require_role(actor, {"admin"})
+    result = cleanup_all_project_files()
+    return JSONResponse({"ok": True, "cleanup": result})
 
 
 # ---------------------------------------------------------------------------

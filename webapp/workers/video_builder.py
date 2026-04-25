@@ -284,36 +284,54 @@ def step_compose_slideshow(
                 segments.append(seg)
 
         if len(segments) > 1:
-            _log("Applying crossfade transitions")
+            max_crossfade_scenes = int(os.environ.get("MAX_CROSSFADE_SCENES", "30"))
+            use_crossfade = (
+                max_crossfade_scenes <= 0 or len(segments) <= max_crossfade_scenes
+            )
+            if use_crossfade:
+                _log("Applying crossfade transitions")
+            else:
+                _log(
+                    f"Skipping crossfade: {len(segments)} scenes exceed "
+                    f"MAX_CROSSFADE_SCENES={max_crossfade_scenes}; using concat"
+                )
             prev = segments[0]
             cumulative_offset = durations[0] - FADE_DUR
-            for i in range(1, len(segments)):
-                xfade_out = temp_dir / f"xfade_{i:04d}.mp4"
+            if use_crossfade:
+                for i in range(1, len(segments)):
+                    xfade_out = temp_dir / f"xfade_{i:04d}.mp4"
 
-                transition = "fade"
-                if scene_plan and i < len(scene_plan):
-                    t = scene_plan[i].get("transition", "fade")
-                    if t in ("dissolve", "fade", "slideright", "slideleft", "wiperight", "wipeleft"):
-                        transition = t
+                    transition = "fade"
+                    if scene_plan and i < len(scene_plan):
+                        t = scene_plan[i].get("transition", "fade")
+                        if t in ("dissolve", "fade", "slideright", "slideleft", "wiperight", "wipeleft"):
+                            transition = t
 
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", str(prev), "-i", str(segments[i]),
-                    "-filter_complex",
-                    f"xfade=transition={transition}:duration={FADE_DUR}:offset={cumulative_offset:.2f},format=yuv420p",
-                    "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
-                    str(xfade_out),
-                ]
-                xfade_timeout = max(600, n_images * 45)
-                try:
-                    subprocess.run(cmd, capture_output=True, text=True, timeout=xfade_timeout, check=True)
-                    prev = xfade_out
-                    cumulative_offset += durations[i] - FADE_DUR
-                except subprocess.CalledProcessError as e:
-                    _log(f"Crossfade failed at segment {i}, falling back to concat: "
-                         f"{e.stderr[:200] if e.stderr else ''}")
-                    prev = None
-                    break
+                    _log(f"Crossfade transition {i}/{len(segments) - 1}")
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", str(prev), "-i", str(segments[i]),
+                        "-filter_complex",
+                        f"xfade=transition={transition}:duration={FADE_DUR}:offset={cumulative_offset:.2f},format=yuv420p",
+                        "-c:v", "libx264", "-crf", "20", "-preset", x264_preset,
+                        str(xfade_out),
+                    ]
+                    xfade_timeout = max(600, n_images * 45)
+                    try:
+                        subprocess.run(cmd, capture_output=True, text=True, timeout=xfade_timeout, check=True)
+                        prev = xfade_out
+                        cumulative_offset += durations[i] - FADE_DUR
+                    except subprocess.CalledProcessError as e:
+                        _log(f"Crossfade failed at segment {i}, falling back to concat: "
+                             f"{e.stderr[:200] if e.stderr else ''}")
+                        prev = None
+                        break
+                    except subprocess.TimeoutExpired:
+                        _log(f"Crossfade timed out at segment {i}, falling back to concat")
+                        prev = None
+                        break
+            else:
+                prev = None
 
             if prev and prev != segments[0]:
                 video_track = prev

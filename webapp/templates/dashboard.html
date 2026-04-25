@@ -24,6 +24,17 @@
   </div>
 </section>
 
+{% if project_started %}
+<section class="card" style="border-color:rgba(25,135,84,0.35);background:rgba(25,135,84,0.08)">
+  <p style="margin:0">
+    <b>Project started.</b>
+    {% if started_project_id %}Project ID: <code>{{ started_project_id }}</code>.{% endif %}
+    The backend queued your job and processing is running in the worker.
+    {% if started_run_id %}<a href="/dashboard/run/{{ started_run_id }}">View run details</a>.{% endif %}
+  </p>
+</section>
+{% endif %}
+
 <!-- Create Project -->
 <section class="card">
   <h2>Create Project</h2>
@@ -38,7 +49,7 @@
       Contact an admin or manager to get credits for more videos.
     </div>
   {% endif %}
-  <form method="post" action="/dashboard/create-project" enctype="multipart/form-data" class="create-form">
+  <form method="post" action="/dashboard/create-project" enctype="multipart/form-data" class="create-form" id="create-project-form">
     <div class="form-row">
       <div class="form-group">
         <label for="pipeline_name">Pipeline</label>
@@ -146,13 +157,13 @@
       </div>
     </div>
     <div class="form-group">
-      <label for="audio_file">Custom Audio / Voiceover <span class="muted">(optional &mdash; MP3, WAV, M4A, up to 50 MB)</span></label>
+      <label for="audio_file">Custom Audio / Voiceover <span class="muted">(optional &mdash; MP3, WAV, M4A, up to 200 MB)</span></label>
       <input type="file" name="audio_file" id="audio_file" accept=".mp3,.wav,.m4a,.ogg,.aac,.flac" />
       <p class="muted" style="font-size:0.82rem;margin-top:4px">
         Upload your own narration or audio track. The pipeline will transcribe it sentence-by-sentence, extract characters and scenes, and create visuals that match your audio word-by-word.
       </p>
     </div>
-    <button type="submit" class="btn btn-primary"
+    <button type="submit" class="btn btn-primary" id="create-project-btn"
       {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}disabled title="Account pending admin approval"
       {% elif current_user.role not in ["admin", "manager"] and current_user.get("credits", 0) <= 0 %}{% endif %}>
       {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}
@@ -162,6 +173,15 @@
       {% endif %}
       {% if current_user.role not in ["admin", "manager"] %}({{ credit_cost }} credit){% endif %}
     </button>
+    <p class="muted" id="create-project-status" style="display:none;margin-top:8px">
+      Starting project... Uploading and queueing in backend.
+    </p>
+    <div id="upload-progress-wrap" style="display:none;margin-top:8px">
+      <div class="progress-bar-container">
+        <div class="progress-bar-fill" id="upload-progress-fill" style="width:0%"></div>
+      </div>
+      <p class="muted" id="upload-progress-text" style="margin-top:6px">Upload 0%</p>
+    </div>
   </form>
 </section>
 
@@ -327,6 +347,57 @@
     }
     refInput.addEventListener("input", toggleCloneRow);
     toggleCloneRow();
+  }
+
+  var createForm = document.getElementById("create-project-form");
+  var createBtn = document.getElementById("create-project-btn");
+  var createStatus = document.getElementById("create-project-status");
+  var uploadWrap = document.getElementById("upload-progress-wrap");
+  var uploadFill = document.getElementById("upload-progress-fill");
+  var uploadText = document.getElementById("upload-progress-text");
+  if (createForm && createBtn && createStatus && uploadWrap && uploadFill && uploadText) {
+    createForm.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      createBtn.disabled = true;
+      createBtn.textContent = "Starting...";
+      createStatus.style.display = "";
+      uploadWrap.style.display = "";
+
+      var formData = new FormData(createForm);
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", createForm.getAttribute("action"), true);
+
+      xhr.upload.onprogress = function (e) {
+        if (!e.lengthComputable) return;
+        var pct = Math.max(0, Math.min(100, Math.round((e.loaded / e.total) * 100)));
+        uploadFill.style.width = pct + "%";
+        uploadText.textContent = "Upload " + pct + "%";
+      };
+
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 400) {
+          uploadFill.style.width = "100%";
+          uploadText.textContent = "Upload complete. Starting backend processing...";
+          window.location.href = xhr.responseURL || "/dashboard";
+          return;
+        }
+        alert("Failed to start project: " + (xhr.responseText || ("HTTP " + xhr.status)));
+        createBtn.disabled = false;
+        createBtn.textContent = "Create Project{% if current_user.role not in [\"admin\", \"manager\"] %} ({{ credit_cost }} credit){% endif %}";
+        createStatus.style.display = "none";
+        uploadWrap.style.display = "none";
+      };
+
+      xhr.onerror = function () {
+        alert("Network error while uploading. Please try again.");
+        createBtn.disabled = false;
+        createBtn.textContent = "Create Project{% if current_user.role not in [\"admin\", \"manager\"] %} ({{ credit_cost }} credit){% endif %}";
+        createStatus.style.display = "none";
+        uploadWrap.style.display = "none";
+      };
+
+      xhr.send(formData);
+    });
   }
 })();
 
