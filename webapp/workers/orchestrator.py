@@ -250,6 +250,7 @@ def run_pipeline(prompt_file: str) -> None:
     enable_watermark = payload.get("enableWatermark", False)
     clone_voice = payload.get("cloneVoice", False)
     enable_music = payload.get("enableMusic", False)
+    allow_image_text = bool(payload.get("allowImageText", False))
 
     # Apply watermark toggle: if user enabled it in the dashboard, forward the
     # WATERMARK_TEXT env var to video_builder (if not already set, use the title).
@@ -260,6 +261,10 @@ def run_pipeline(prompt_file: str) -> None:
     else:
         os.environ.pop("WATERMARK_TEXT", None)
         _log("Watermark: disabled")
+
+    # Image text rendering toggle: default OFF for cleaner story visuals.
+    os.environ["IMAGE_ALLOW_TEXT"] = "1" if allow_image_text else "0"
+    _log(f"Image text inside generated images: {'allowed' if allow_image_text else 'disallowed'}")
 
     _log(f"Pipeline: {pipeline_name}")
     _log(f"Project:  {project_id}")
@@ -413,7 +418,7 @@ def run_pipeline(prompt_file: str) -> None:
             # while the audio narrates multiple distinct story moments.
             # Default 4s gives ~3–4 images per 12–16s of narration — matching
             # the pacing of reference Tamil story channels (3–4s per image).
-            max_seg_dur = float(os.environ.get("MAX_SEGMENT_DURATION", "4"))
+            max_seg_dur = float(os.environ.get("MAX_SEGMENT_DURATION", "3.5"))
             before_split = len(merged_timings)
             merged_timings = _split_long_segments(merged_timings, max_segment_dur=max_seg_dur)
             if len(merged_timings) != before_split:
@@ -421,6 +426,18 @@ def run_pipeline(prompt_file: str) -> None:
                     f"[Segment split] {before_split} → {len(merged_timings)} segments "
                     f"(max {max_seg_dur:.0f}s per segment)"
                 )
+
+            # Long videos need denser scene coverage so each image stays on screen
+            # for a shorter interval and tracks narration more tightly.
+            target_scene_seconds = float(os.environ.get("TARGET_SCENE_SECONDS", "4.5"))
+            target_scene_count = max(
+                len(merged_timings),
+                min(max_scenes_budget, int(max(1.0, target_dur) / max(1.0, target_scene_seconds))),
+            )
+            merged_timings = _split_long_segments(
+                merged_timings,
+                max_segment_dur=max(1.5, target_dur / max(target_scene_count, 1)),
+            )
 
             merged_timings = _add_english_to_timings(merged_timings, audio_lang)
 

@@ -510,6 +510,12 @@ def step_generate_scene_plan(
     *,
     style_notes: str = "",
 ) -> list[dict[str, Any]]:
+    allow_image_text = _env_truthy("IMAGE_ALLOW_TEXT", False)
+    image_text_rule = (
+        "Text inside image is allowed when context requires it."
+        if allow_image_text
+        else "STRICTLY NO text in image: no words, letters, captions, subtitles, logos, watermarks, signboards, or UI text."
+    )
     if _google_available():
         ref_context = ""
         if ref_summary:
@@ -599,6 +605,7 @@ For each scene, provide a JSON array with exactly {scene_count} objects. Each ob
 - "image_prompt": A DETAILED prompt for AI image generation. CRITICAL RULES:
   * EVERY prompt MUST start with exactly: "{style_prefix_for_prompt}"
   * Then describe the SPECIFIC scene content AFTER the style prefix.
+  * {image_text_rule}
   * CAMERA ANGLE VARIETY — cycle through these shot types to keep visuals dynamic:
     - Close-up portrait: character's face filling the frame, blurred background, strong emotional expression
     - Medium shot: character(s) from waist-up, clear body language and interaction visible
@@ -662,6 +669,12 @@ def _generate_scene_plan_batched(
     ref_context: str, style_context: str, char_context: str,
     timing_context: str, ref_style: dict[str, str] | None,
 ) -> list[dict[str, Any]]:
+    allow_image_text = _env_truthy("IMAGE_ALLOW_TEXT", False)
+    image_text_rule = (
+        "Text inside image is allowed when context requires it."
+        if allow_image_text
+        else "STRICTLY NO text in image: no words, letters, captions, subtitles, logos, watermarks, signboards, or UI text."
+    )
     batch_size = 15
     all_scenes: list[dict[str, Any]] = []
     sentences = re.split(r'(?<=[.!?])\s+', script.strip())
@@ -702,6 +715,7 @@ Script portion (scenes {start_scene+1}-{end_scene}):
 Create a JSON array with exactly {count_this_batch} scene objects. Each must have:
 - "narration": portion of script for this scene
 - "image_prompt": EVERY prompt MUST start with "{style_prefix_for_batch}" Then describe the specific scene.
+  {image_text_rule}
   CAMERA ANGLE VARIETY — rotate through: close-up portrait (face fills frame), medium shot (waist-up), wide shot (full environment), low-angle dramatic, over-the-shoulder. Pick the most emotionally fitting angle.
   CHARACTER CONSISTENCY: copy the exact skin color, outfit, and colors from the character list above for every character who appears. Only change outfit if the narration says so.
   BACKGROUND VARIETY: vary framing and composition in every scene — different angles, props, lighting mood.
@@ -756,6 +770,12 @@ def step_generate_scene_plan_timeline(
 ) -> list[dict[str, Any]]:
     if not segments:
         return []
+    allow_image_text = _env_truthy("IMAGE_ALLOW_TEXT", False)
+    image_text_rule = (
+        "Text inside image is allowed when context requires it."
+        if allow_image_text
+        else "STRICTLY NO text in image: no words, letters, captions, subtitles, logos, watermarks, signboards, or UI text."
+    )
 
     style_line = ref_style.get("art_style", DEFAULT_STYLE["art_style"])
     palette = ref_style.get("color_palette", DEFAULT_STYLE["color_palette"])
@@ -817,6 +837,7 @@ Timed scenes (each line has duration_sec — copy it EXACTLY into the "duration"
 Rules:
 - "narration": use the ORIG text for that scene (subtitle / spoken line).
 - "image_prompt": MUST begin with the Base rendering style text above, then describe ONLY what the EN line says is happening.
+  {image_text_rule}
   CAMERA ANGLE — for EACH scene pick the most emotionally fitting angle and state it clearly:
     • Close-up portrait: character face fills frame, bokeh background, intense expression
     • Medium shot (waist-up): body language and interaction visible

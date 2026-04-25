@@ -35,6 +35,19 @@
 </section>
 {% endif %}
 
+{% if rerun_prefill %}
+<section class="card" style="border-color:rgba(13,110,253,0.35);background:rgba(13,110,253,0.08)">
+  <p style="margin:0">
+    <b>Re-run mode:</b> reviewing previous project settings.
+    {% if rerun_prefill.hasUploadedAudio %}
+    Existing uploaded audio will be reused automatically unless you upload a new file.
+    {% else %}
+    No previous uploaded audio found; upload a file if needed.
+    {% endif %}
+  </p>
+</section>
+{% endif %}
+
 <!-- Create Project -->
 <section class="card">
   <h2>Create Project</h2>
@@ -49,7 +62,21 @@
       Contact an admin or manager to get credits for more videos.
     </div>
   {% endif %}
-  <form method="post" action="/dashboard/create-project" enctype="multipart/form-data" class="create-form" id="create-project-form">
+  <form
+    method="post"
+    action="/dashboard/create-project"
+    enctype="multipart/form-data"
+    class="create-form"
+    id="create-project-form"
+    data-rerun-pipeline="{{ rerun_prefill.pipelineName if rerun_prefill else '' }}"
+    data-rerun-audio-language="{{ rerun_prefill.audioLanguage if rerun_prefill else '' }}"
+    data-rerun-enable-subtitles="{{ 'yes' if rerun_prefill and rerun_prefill.enableSubtitles else 'no' }}"
+    data-rerun-subtitle-language="{{ rerun_prefill.subtitleLanguage if rerun_prefill else '' }}"
+    data-rerun-enable-watermark="{{ 'yes' if rerun_prefill and rerun_prefill.enableWatermark else 'no' }}"
+    data-rerun-clone-voice="{{ 'yes' if rerun_prefill and rerun_prefill.cloneVoice else 'no' }}"
+    data-rerun-enable-music="{{ 'yes' if rerun_prefill and rerun_prefill.enableMusic else 'no' }}"
+    data-rerun-allow-image-text="{{ 'yes' if rerun_prefill and rerun_prefill.allowImageText else 'no' }}"
+  >
     <div class="form-row">
       <div class="form-group">
         <label for="pipeline_name">Pipeline</label>
@@ -64,16 +91,16 @@
       </div>
       <div class="form-group">
         <label for="title">Project Title</label>
-        <input type="text" name="title" id="title" placeholder="My video project" required />
+        <input type="text" name="title" id="title" placeholder="My video project" value="{{ rerun_prefill.title if rerun_prefill else '' }}" required />
       </div>
     </div>
     <div class="form-group">
       <label for="prompt">Prompt / Description</label>
-      <textarea name="prompt" id="prompt" rows="4" placeholder="Describe the video you want to create. You can also paste a YouTube URL as reference..." required></textarea>
+      <textarea name="prompt" id="prompt" rows="4" placeholder="Describe the video you want to create. You can also paste a YouTube URL as reference..." required>{{ rerun_prefill.prompt if rerun_prefill else '' }}</textarea>
     </div>
     <div class="form-group">
       <label for="reference_url">Reference Video URL <span class="muted">(optional &mdash; YouTube, TikTok, Reel, or any video URL)</span></label>
-      <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." />
+      <input type="url" name="reference_url" id="reference_url" placeholder="https://youtube.com/watch?v=..." value="{{ rerun_prefill.referenceUrl if rerun_prefill else '' }}" />
     </div>
     <div class="form-row" id="clone-voice-row" style="display:none">
       <div class="form-group">
@@ -155,6 +182,16 @@
           <option value="yes">Yes (coming soon)</option>
         </select>
       </div>
+      <div class="form-group">
+        <label for="allow_image_text">Write Story Text Inside Images?</label>
+        <select name="allow_image_text" id="allow_image_text">
+          <option value="no" selected>No — keep generated images text-free</option>
+          <option value="yes">Yes — allow text rendered inside images</option>
+        </select>
+        <p class="muted" style="font-size:0.82rem;margin-top:4px">
+          Recommended: <b>No</b>. Subtitles are handled separately and this prevents unwanted text artifacts in scenes.
+        </p>
+      </div>
     </div>
     <div class="form-group">
       <label for="audio_file">Custom Audio / Voiceover <span class="muted">(optional &mdash; MP3, WAV, M4A, up to 200 MB)</span></label>
@@ -167,16 +204,17 @@
       type="submit"
       class="btn btn-primary"
       id="create-project-btn"
-      data-default-label="Create Project{% if current_user.role not in ['admin', 'manager'] %} ({{ credit_cost }} credit){% endif %}"
+      data-default-label="{% if rerun_prefill %}Re-run Project{% else %}Create Project{% endif %}{% if current_user.role not in ['admin', 'manager'] %} ({{ credit_cost }} credit){% endif %}"
       {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}disabled title="Account pending admin approval"
       {% elif current_user.role not in ["admin", "manager"] and current_user.get("credits", 0) <= 0 %}{% endif %}>
       {% if current_user.role not in ["admin", "manager"] and not current_user.get("isApproved", False) %}
         Pending Approval
       {% else %}
-        Create Project
+        {% if rerun_prefill %}Re-run Project{% else %}Create Project{% endif %}
       {% endif %}
       {% if current_user.role not in ["admin", "manager"] %}({{ credit_cost }} credit){% endif %}
     </button>
+    <input type="hidden" name="rerun_source_run_id" id="rerun_source_run_id" value="{{ rerun_prefill.sourceRunId if rerun_prefill else '' }}" />
     <p class="muted" id="create-project-status" style="display:none;margin-top:8px">
       Starting project... Uploading and queueing in backend.
     </p>
@@ -228,15 +266,26 @@
           <td>
             {% if run.outputVideoPath %}
               <a href="/download/run/{{ run.id }}" class="btn btn-primary btn-sm">Download</a>
+              <a href="/dashboard/rerun/{{ run.id }}" class="btn btn-sm" style="margin-left:4px">Re-run</a>
+              <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteRunFromDash('{{ run.id }}', this)">Delete</button>
             {% elif run.status in ["queued", "running"] %}
               <a href="/dashboard/run/{{ run.id }}" class="btn btn-sm" style="margin-right:4px">View</a>
               <button class="btn btn-danger btn-sm" onclick="cancelFromDash('{{ run.id }}', this)">Cancel</button>
+              <a href="/dashboard/rerun/{{ run.id }}" class="btn btn-sm" style="margin-left:4px">Re-run</a>
             {% elif run.status == "failed" %}
               <a href="/dashboard/run/{{ run.id }}" class="muted">View Error</a>
+              <a href="/dashboard/rerun/{{ run.id }}" class="btn btn-sm" style="margin-left:4px">Re-run</a>
+              <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteRunFromDash('{{ run.id }}', this)">Delete</button>
             {% elif run.status == "cancelled" %}
               <span class="muted">Cancelled</span>
+              <a href="/dashboard/rerun/{{ run.id }}" class="btn btn-sm" style="margin-left:4px">Re-run</a>
+              <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="deleteRunFromDash('{{ run.id }}', this)">Delete</button>
+            {% elif run.status == "deleted" %}
+              <span class="muted">Deleted</span>
+              <a href="/dashboard/rerun/{{ run.id }}" class="btn btn-sm" style="margin-left:4px">Re-run</a>
             {% else %}
               <span class="muted">Pending</span>
+              <a href="/dashboard/rerun/{{ run.id }}" class="btn btn-sm" style="margin-left:4px">Re-run</a>
             {% endif %}
           </td>
         </tr>
@@ -404,6 +453,53 @@
       xhr.send(formData);
     });
   }
+
+  var rerunPrefill = {
+    pipelineName: createForm ? (createForm.dataset.rerunPipeline || "") : "",
+    audioLanguage: createForm ? (createForm.dataset.rerunAudioLanguage || "") : "",
+    enableSubtitles: createForm ? (createForm.dataset.rerunEnableSubtitles === "yes") : false,
+    subtitleLanguage: createForm ? (createForm.dataset.rerunSubtitleLanguage || "") : "",
+    enableWatermark: createForm ? (createForm.dataset.rerunEnableWatermark === "yes") : false,
+    cloneVoice: createForm ? (createForm.dataset.rerunCloneVoice === "yes") : false,
+    enableMusic: createForm ? (createForm.dataset.rerunEnableMusic === "yes") : false,
+    allowImageText: createForm ? (createForm.dataset.rerunAllowImageText === "yes") : false
+  };
+  if (rerunPrefill && rerunPrefill.pipelineName && sel) sel.value = rerunPrefill.pipelineName;
+  if (rerunPrefill && rerunPrefill.audioLanguage) {
+    var audioSel = document.getElementById("audio_language");
+    if (audioSel) audioSel.value = rerunPrefill.audioLanguage;
+  }
+  if (rerunPrefill && typeof rerunPrefill.enableSubtitles === "boolean") {
+    var subSel = document.getElementById("enable_subtitles");
+    if (subSel) subSel.value = rerunPrefill.enableSubtitles ? "yes" : "no";
+  }
+  if (rerunPrefill && rerunPrefill.subtitleLanguage !== undefined) {
+    var subLangSel = document.getElementById("subtitle_language");
+    if (subLangSel) subLangSel.value = rerunPrefill.subtitleLanguage || "";
+  }
+  if (rerunPrefill && typeof rerunPrefill.enableWatermark === "boolean") {
+    var wmSel = document.getElementById("enable_watermark");
+    if (wmSel) wmSel.value = rerunPrefill.enableWatermark ? "yes" : "no";
+  }
+  if (rerunPrefill && typeof rerunPrefill.cloneVoice === "boolean") {
+    var cloneSel = document.getElementById("clone_voice");
+    if (cloneSel) cloneSel.value = rerunPrefill.cloneVoice ? "yes" : "no";
+  }
+  if (rerunPrefill && typeof rerunPrefill.enableMusic === "boolean") {
+    var musicSel = document.getElementById("enable_music");
+    if (musicSel) musicSel.value = rerunPrefill.enableMusic ? "yes" : "no";
+  }
+  if (rerunPrefill && typeof rerunPrefill.allowImageText === "boolean") {
+    var imageTextSel = document.getElementById("allow_image_text");
+    if (imageTextSel) imageTextSel.value = rerunPrefill.allowImageText ? "yes" : "no";
+  }
+  if (subToggle && subOptions) {
+    subOptions.style.display = subToggle.value === "yes" ? "" : "none";
+  }
+  if (refInput && cloneRow) {
+    cloneRow.style.display = refInput.value.trim() ? "" : "none";
+  }
+  update();
 })();
 
 function cancelFromDash(runId, btn) {
@@ -417,6 +513,28 @@ function cancelFromDash(runId, btn) {
       else { alert("Failed: " + (data.detail || "Unknown error")); btn.disabled = false; btn.textContent = "Cancel"; }
     })
     .catch(function() { alert("Network error"); btn.disabled = false; btn.textContent = "Cancel"; });
+}
+
+function deleteRunFromDash(runId, btn) {
+  if (!confirm("Delete this project run and its generated files? This cannot be undone.")) return;
+  btn.disabled = true;
+  var old = btn.textContent;
+  btn.textContent = "Deleting...";
+  fetch("/api/run/" + runId + "/delete", { method: "POST" })
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      if (data.status === "deleted") location.reload();
+      else {
+        alert("Delete failed: " + (data.detail || "Unknown error"));
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    })
+    .catch(function(){
+      alert("Network error");
+      btn.disabled = false;
+      btn.textContent = old;
+    });
 }
 </script>
 {% endblock %}

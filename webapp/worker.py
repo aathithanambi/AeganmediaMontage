@@ -298,6 +298,7 @@ def _execute_run(run: dict) -> None:
                 "enableWatermark": run.get("enableWatermark", False),
                 "cloneVoice": run.get("cloneVoice", False),
                 "enableMusic": run.get("enableMusic", False),
+                "allowImageText": run.get("allowImageText", False),
                 "requestedBy": run.get("requestedBy"),
             },
             ensure_ascii=True,

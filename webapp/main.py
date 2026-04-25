@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,40 @@ def _public_run(run: dict[str, Any]) -> dict[str, Any]:
 
 def _is_privileged(user: dict[str, Any]) -> bool:
     return user.get("role") in {"admin", "manager"}
+
+
+def _can_access_run(user: dict[str, Any], run: dict[str, Any]) -> bool:
+    return _is_privileged(user) or run.get("requestedBy") == str(user["_id"])
+
+
+def _project_dir(project_id: str) -> Path:
+    return (Path("projects") / project_id).resolve()
+
+
+def _sanitize_project_slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "untitled"
+
+
+def _unique_project_id(base_slug: str) -> str:
+    """Generate a unique project ID directory name."""
+    candidate = base_slug
+    i = 2
+    while _project_dir(candidate).exists():
+        candidate = f"{base_slug}-{i}"
+        i += 1
+    return candidate
+
+
+def _prompt_without_reference_prefix(prompt: str, reference_url: str | None) -> str:
+    if not prompt:
+        return ""
+    if not reference_url:
+        return prompt
+    lines = prompt.splitlines()
+    if lines and lines[0].strip().lower().startswith("reference:"):
+        rest = "\n".join(lines[1:]).lstrip()
+        return rest or prompt
+    return prompt
 
 
 @app.on_event("startup")
@@ -303,6 +338,32 @@ def dashboard(request: Request):
     project_started = request.query_params.get("project_started") == "1"
     started_project_id = (request.query_params.get("project_id") or "").strip()
     started_run_id = (request.query_params.get("run_id") or "").strip()
+    rerun_prefill: dict[str, Any] | None = None
+    rerun_from = (request.query_params.get("rerun_from") or "").strip()
+    if rerun_from:
+        try:
+            source_run = db.pipeline_runs.find_one({"_id": ObjectId(rerun_from)})
+        except Exception:
+            source_run = None
+        if source_run and _can_access_run(user, source_run):
+            rerun_prefill = {
+                "sourceRunId": str(source_run["_id"]),
+                "pipelineName": source_run.get("pipelineName") or "animated-explainer",
+                "title": source_run.get("title") or "",
+                "prompt": _prompt_without_reference_prefix(
+                    source_run.get("prompt") or "",
+                    source_run.get("referenceUrl"),
+                ),
+                "referenceUrl": source_run.get("referenceUrl") or "",
+                "audioLanguage": source_run.get("audioLanguage") or "",
+                "subtitleLanguage": source_run.get("subtitleLanguage") or "",
+                "enableSubtitles": bool(source_run.get("enableSubtitles", False)),
+                "enableWatermark": bool(source_run.get("enableWatermark", False)),
+                "cloneVoice": bool(source_run.get("cloneVoice", False)),
+                "enableMusic": bool(source_run.get("enableMusic", False)),
+                "allowImageText": bool(source_run.get("allowImageText", False)),
+                "hasUploadedAudio": bool(source_run.get("uploadedAudioPath")),
+            }
     return templates.TemplateResponse(
         request, "dashboard.html",
         _template_context(
@@ -314,6 +375,7 @@ def dashboard(request: Request):
             project_started=project_started,
             started_project_id=started_project_id,
             started_run_id=started_run_id,
+            rerun_prefill=rerun_prefill,
         ),
     )
 
@@ -335,6 +397,8 @@ async def create_project_from_form(
     enable_watermark: str = Form("no"),
     clone_voice: str = Form("no"),
     enable_music: str = Form("no"),
+    allow_image_text: str = Form("no"),
+    rerun_source_run_id: str = Form(""),
     audio_file: UploadFile | None = File(None),
 ):
     """Form-based project creation with optional audio upload."""
@@ -379,7 +443,13 @@ async def create_project_from_form(
     if reference_url.strip():
         full_prompt = f"Reference: {reference_url.strip()}\n\n{prompt}"
 
-    project_id = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-") or "untitled"
+    is_rerun = bool(rerun_source_run_id.strip())
+    base_slug = _sanitize_project_slug(title)
+    if is_rerun:
+        ts = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        project_id = _unique_project_id(f"{base_slug}-rerun-{ts}")
+    else:
+        project_id = _unique_project_id(base_slug)
 
     uploaded_audio_path: str | None = None
     if audio_file and audio_file.filename:
@@ -416,6 +486,26 @@ async def create_project_from_form(
         finally:
             await audio_file.close()
         uploaded_audio_path = str(dest)
+    elif is_rerun:
+        try:
+            source_run = db.pipeline_runs.find_one({"_id": ObjectId(rerun_source_run_id.strip())})
+        except Exception:
+            source_run = None
+        if source_run and _can_access_run(user, source_run):
+            src_audio = source_run.get("uploadedAudioPath")
+            if isinstance(src_audio, str) and src_audio:
+                src_path = Path(src_audio)
+                safe_src = _safe_video_path(src_audio)
+                if safe_src and src_path.exists():
+                    ext = src_path.suffix.lower()
+                    audio_dir = Path("projects") / project_id / "assets"
+                    audio_dir.mkdir(parents=True, exist_ok=True)
+                    dest = audio_dir / f"uploaded_audio{ext}"
+                    try:
+                        shutil.copy2(str(src_path), str(dest))
+                        uploaded_audio_path = str(dest)
+                    except OSError:
+                        uploaded_audio_path = None
 
     now = datetime.now(UTC)
     run_doc = {
@@ -430,6 +520,8 @@ async def create_project_from_form(
         "enableWatermark": enable_watermark.strip().lower() == "yes",
         "cloneVoice": clone_voice.strip().lower() == "yes",
         "enableMusic": enable_music.strip().lower() == "yes",
+        "allowImageText": allow_image_text.strip().lower() == "yes",
+        "rerunOfRunId": rerun_source_run_id.strip() or None,
         "uploadedAudioPath": uploaded_audio_path,
         "status": "queued",
         "requestedBy": str(user["_id"]),
@@ -654,6 +746,24 @@ def run_progress_api(request: Request, run_id: str):
     return JSONResponse(payload)
 
 
+@app.get("/dashboard/rerun/{run_id}")
+def rerun_from_existing(request: Request, run_id: str):
+    """Open dashboard create form prefilled from an existing run."""
+    user = _require_user(request)
+    db = get_db()
+    try:
+        oid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid run ID")
+    run = db.pipeline_runs.find_one({"_id": oid})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not _can_access_run(user, run):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    q = urlencode({"rerun_from": run_id})
+    return RedirectResponse(f"/dashboard?{q}", status_code=303)
+
+
 @app.post("/api/run/{run_id}/cancel")
 def cancel_run(request: Request, run_id: str):
     """Cancel a queued or running pipeline run."""
@@ -683,6 +793,90 @@ def cancel_run(request: Request, run_id: str):
         )
 
     return JSONResponse({"status": "cancelled", "refunded": run.get("creditsCharged", 0)})
+
+
+@app.post("/api/run/{run_id}/delete")
+def delete_run(request: Request, run_id: str):
+    """Delete one project run's generated files + mark metadata as deleted."""
+    user = _require_user(request)
+    db = get_db()
+    try:
+        oid = ObjectId(run_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid run ID")
+    run = db.pipeline_runs.find_one({"_id": oid})
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not _can_access_run(user, run):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if run.get("status") in {"queued", "running"}:
+        raise HTTPException(status_code=400, detail="Cancel the run before deleting")
+
+    # Delete per-run file paths (if still present and safe)
+    paths = [
+        run.get("outputVideoPath"),
+        run.get("imagesZipPath"),
+        run.get("subtitlesEnPath"),
+        run.get("subtitlesLangPath"),
+        run.get("uploadedAudioPath"),
+    ]
+    removed_files = 0
+    for raw in paths:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        p = _safe_video_path(raw)
+        if p and p.exists():
+            try:
+                p.unlink(missing_ok=True)
+                removed_files += 1
+            except OSError:
+                pass
+
+    # Delete project folder for this run.
+    removed_project = False
+    project_id = run.get("projectId") or ""
+    if isinstance(project_id, str) and project_id:
+        proj_dir = _project_dir(project_id)
+        root = Path("projects").resolve()
+        try:
+            proj_dir.relative_to(root)
+            if proj_dir.exists():
+                shutil.rmtree(str(proj_dir), ignore_errors=True)
+                removed_project = True
+        except ValueError:
+            pass
+
+    now = datetime.now(UTC)
+    db.pipeline_runs.update_one(
+        {"_id": run["_id"]},
+        {"$set": {
+            "status": "deleted",
+            "error": "Deleted by user",
+            "outputVideoPath": None,
+            "imagesZipPath": None,
+            "subtitlesEnPath": None,
+            "subtitlesLangPath": None,
+            "uploadedAudioPath": None,
+            "deletedAt": now,
+            "updatedAt": now,
+        }},
+    )
+    db.video_jobs.update_many(
+        {"projectId": project_id},
+        {"$set": {
+            "videoExists": False,
+            "videoPath": None,
+            "imagesZipPath": None,
+            "status": "deleted",
+            "deletedAt": now,
+            "updatedAt": now,
+        }},
+    )
+    return JSONResponse({
+        "status": "deleted",
+        "removedFiles": removed_files,
+        "removedProjectDir": removed_project,
+    })
 
 
 @app.get("/preview/run/{run_id}")

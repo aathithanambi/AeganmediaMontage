@@ -278,6 +278,7 @@ def step_fetch_images(
         return []
 
     backend = (os.environ.get("IMAGE_BACKEND") or "gemini").strip().lower()
+    allow_image_text = _env_truthy("IMAGE_ALLOW_TEXT", False)
     if backend not in ("gemini", "imagen", "auto"):
         _log(f"IMAGE_BACKEND={backend!r} invalid — defaulting to gemini")
         backend = "gemini"
@@ -369,6 +370,13 @@ def step_fetch_images(
                 + "\n".join(prev_refs)
             )
 
+        if not allow_image_text:
+            image_prompt += (
+                "\n\nGLOBAL NEGATIVE RULES:\n"
+                "Do NOT render text, letters, words, captions, subtitles, logos, watermarks, signboards, UI labels, or typographic marks.\n"
+                "Do NOT place any written script anywhere in the frame."
+            )
+
         # ── Step E: cache lookup ─────────────────────────────────────────────
         cache_key = hashlib.sha256(f"{backend}|{image_prompt}".encode()).hexdigest()
         cache_file = cache_root / f"{cache_key}.png"
@@ -428,8 +436,21 @@ def step_fetch_images(
             for _ in as_completed([ex.submit(_run_group, g) for g in scene_groups]):
                 pass  # progress tracked inside _run_group
 
-    out_list = [p for p in images if p]
-    _log(f"Image generation complete: {len(out_list)}/{total} images")
+    # Keep one image per scene index. If some generations fail, fill gaps by
+    # reusing the nearest successful image so timeline/audio alignment remains stable.
+    existing = [p for p in images if p]
+    if existing:
+        first_ok = next((idx for idx, p in enumerate(images) if p), 0)
+        last_seen = images[first_ok]
+        for idx in range(0, first_ok):
+            images[idx] = last_seen
+        for idx in range(first_ok + 1, len(images)):
+            if images[idx]:
+                last_seen = images[idx]
+            else:
+                images[idx] = last_seen
+    out_list = [str(p) for p in images if p]
+    _log(f"Image generation complete: {len(out_list)}/{total} images (after gap fill)")
     return out_list
 
 

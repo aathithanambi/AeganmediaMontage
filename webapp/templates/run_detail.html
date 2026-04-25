@@ -28,6 +28,16 @@
   </div>
 </section>
 
+<section class="card">
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <a href="/dashboard/rerun/{{ run._id }}" class="btn btn-primary">Re-run This Project</a>
+    {% if run.status not in ["queued", "running"] %}
+    <button class="btn btn-danger" id="delete-run-btn" onclick="deleteRun()">Delete This Project</button>
+    {% endif %}
+    <a href="/dashboard" class="btn btn-secondary">&larr; Back to Dashboard</a>
+  </div>
+</section>
+
 <!-- Progress bar (shown for running/queued) -->
 {% if run.status in ["running", "queued"] %}
 <section class="card" id="progress-section">
@@ -149,8 +159,6 @@
   <pre class="log-block log-error">{{ run.stderr[-4000:] }}</pre>
 </section>
 {% endif %}
-
-<a href="/dashboard" class="btn btn-secondary">&larr; Back to Dashboard</a>
 
 {% if run.status in ["running", "queued"] %}
 <script>
@@ -327,5 +335,36 @@ function cancelRun() {
 })();
 </script>
 {% endif %}
+
+<script>
+function deleteRun() {
+  if (!confirm("Delete this project run and generated files? This cannot be undone.")) return;
+  const btn = document.getElementById("delete-run-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Deleting...";
+  }
+  fetch("/api/run/{{ run._id }}/delete", { method: "POST" })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === "deleted") {
+        window.location.href = "/dashboard";
+        return;
+      }
+      alert("Delete failed: " + (data.detail || "Unknown error"));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Delete This Project";
+      }
+    })
+    .catch(() => {
+      alert("Network error");
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Delete This Project";
+      }
+    });
+}
+</script>
 
 {% endblock %}
